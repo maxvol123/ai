@@ -1,0 +1,37 @@
+{
+  "name": "ai-news-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "dist/app.js",
+  "scripts": {
+    "dev": "nodemon --exec ts-node src/app.ts",
+    "start": "ts-node src/app.ts",
+    "build": "tsc",
+    "collect": "ts-node src/app.ts",
+    "collect:once": "ts-node src/jobs/collect-once.ts",
+    "analyze:latest": "ts-node src/jobs/analyze-latest.job.ts",
+    "export:rejected": "ts-node src/jobs/export-rejected-articles.job.ts",
+    "process:random-two": "ts-node src/jobs/process-random-two.job.ts",
+    "recluster:events": "ts-node src/jobs/recluster-events.job.ts",
+    "telegram:poll": "ts-node src/jobs/telegram-approval.job.ts",
+    "postinstall": "prisma skills sync || exit 0"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@prisma/client": "^6.19.0",
+    "cheerio": "^1.2.0",
+    "dotenv": "^18.0.1",
+    "openai": "^7.19.0",
+    "rss-parser": "^3.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "nodemon": "^3.1.14",
+    "prisma": "^6.19.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,85 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Article {
+  id          String   @id @default(cuid())
+
+  source      String
+  title       String
+  url         String   @unique
+  description String?
+  content     String?
+
+  score       Float?
+  screeningPassed Boolean?
+  screeningDecision String?
+  screeningReason String?
+  skipReason  String?
+  impact      Float?
+  novelty     Float?
+  reach       Float?
+  sourceAuthority Float?
+  expectedAttention Float?
+  confidence  Float?
+  eventHint   String?
+  summary     String?
+  category    String?
+  whyItMatters String?
+  telegramPost String?
+  recommendedForPublish Boolean?
+  telegramMessageId      Int?
+
+  embedding   Json?
+  eventId     String?
+  event       Event? @relation(fields: [eventId], references: [id])
+
+  status      String   @default("NEW")
+
+  publishedAt DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Event {
+  id         String    @id @default(cuid())
+  title      String
+  summary    String
+  embedding  Json
+  importance Float
+  status     String
+
+  articles   Article[]
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}
+
+enum SourceType {
+  OFFICIAL
+  MEDIA
+  RESEARCH
+  SOCIAL
+}
+
+model Source {
+  id                  String     @id @default(cuid())
+  name                String     @unique
+  url       String?
+  type      SourceType @default(OFFICIAL)
+  authority Float      @default(5)
+  pollIntervalMinutes Int        @default(30)
+  lastCheckedAt       DateTime?
+  lastSuccessAt       DateTime?
+  nextCheckAt         DateTime  @default(now())
+  consecutiveFailures Int        @default(0)
+  enabled             Boolean    @default(true)
+
+  @@index([enabled, nextCheckAt])
+}
