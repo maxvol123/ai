@@ -17,6 +17,7 @@ model Article {
   content     String?
 
   score       Float?
+  preliminaryScore Float?
   screeningPassed Boolean?
   screeningDecision String?
   screeningReason String?

@@ -2,6 +2,7 @@ import { prisma } from '../db/prisma';
 import { Article } from '../types/article';
 import { ArticleAnalysis, ArticleScreening } from './analysis.service';
 import { RankingResult } from './ranking.service';
+import { FINAL_EDITOR_THRESHOLD, qualifiesForFinalEditor } from './editorial-config';
 
 export async function saveArticles(articles: Article[]) {
   return prisma.article.createManyAndReturn({
@@ -14,11 +15,13 @@ export async function saveArticleAnalysis(
   articleId: string,
   analysis: ArticleAnalysis,
   ranking: RankingResult,
+  preliminaryScore: number,
 ): Promise<void> {
   await prisma.article.update({
     where: { id: articleId },
     data: {
       score: ranking.score,
+      preliminaryScore,
       impact: analysis.impact,
       novelty: analysis.novelty,
       reach: analysis.reach,
@@ -29,11 +32,13 @@ export async function saveArticleAnalysis(
       category: analysis.category,
       summary: analysis.summary,
       whyItMatters: analysis.whyItMatters,
-      recommendedForPublish: ranking.recommendedForPublish,
-      skipReason: ranking.score < 5
+      recommendedForPublish: qualifiesForFinalEditor(preliminaryScore) && ranking.recommendedForPublish,
+      skipReason: !qualifiesForFinalEditor(preliminaryScore)
+        ? `Final editor skipped: preliminary score ${preliminaryScore}/10 is below ${FINAL_EDITOR_THRESHOLD}/10.`
+        : ranking.score < 5
         ? `Telegram skipped: ranking score ${ranking.score}/10 is below the 5/10 threshold.`
         : null,
-      status: 'ANALYZED',
+      status: qualifiesForFinalEditor(preliminaryScore) ? 'ANALYZED' : 'PRELIMINARY_SKIPPED',
     },
   });
 }
@@ -51,6 +56,7 @@ export async function saveArticleScreening(
       ...(screening.decision === 'REJECT' ? {
         status: 'REJECTED',
         score: null,
+        preliminaryScore: null,
         impact: null,
         novelty: null,
         reach: null,
@@ -98,7 +104,7 @@ export async function setArticleApproval(
   approved: boolean,
 ): Promise<boolean> {
   const result = await prisma.article.updateMany({
-    where: { id: articleId, status: 'ANALYZED' },
+    where: { id: articleId, status: 'ANALYZED', preliminaryScore: { gte: FINAL_EDITOR_THRESHOLD } },
     data: { status: approved ? 'APPROVED' : 'REJECTED' },
   });
 
@@ -110,6 +116,7 @@ export async function getApprovedArticleForPublishing(articleId: string) {
     where: { id: articleId, status: 'APPROVED' },
     select: {
       title: true,
+      preliminaryScore: true,
       url: true,
       source: true,
       description: true,

@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { editorialModels, qualifiesForFinalEditor } from './editorial-config';
 
 const client = new OpenAI({ apiKey: process.env.OPENAI_API });
 const MAX_POST_WORDS = 180;
@@ -21,6 +22,7 @@ Target 100–180 words excluding hashtags. Major stories may use up to 220; mino
 Return only the finished Telegram post.`;
 
 export interface TelegramWriterArticle {
+  preliminaryScore: number | null;
   source: string;
   title: string;
   description: string | null;
@@ -51,10 +53,13 @@ function limitPostWords(post: string): string {
 }
 
 export async function writeTelegramPost(article: TelegramWriterArticle): Promise<string> {
+  if (!qualifiesForFinalEditor(article.preliminaryScore)) {
+    throw new Error('Article does not qualify for final writing; rerun preliminary ranking first');
+  }
   if (!process.env.OPENAI_API) throw new Error('OPENAI_API is not set');
 
   const response = await client.responses.create({
-    model: 'gpt-5.6',
+    model: editorialModels().finalEditor,
     store: false,
     max_output_tokens: 600,
     instructions,

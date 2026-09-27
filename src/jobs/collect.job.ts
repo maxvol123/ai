@@ -33,6 +33,11 @@ export async function runCollectJob(): Promise<void> {
       continue;
     }
 
+    if (processed.kind === 'BELOW_PRELIMINARY_THRESHOLD') {
+      console.log(`Below preliminary threshold (${processed.preliminaryScore}/10): ${article.title}`);
+      continue;
+    }
+
     const { analysis, ranking } = processed;
 
     if (ranking.score < 6) {

@@ -1,6 +1,7 @@
 import { StoredArticle } from '../types/article';
 import {
-  analyzeArticle,
+  preliminaryRankArticle,
+  finalRankArticle,
   ArticleAnalysis,
   ArticleScreening,
   compareEvents,
@@ -26,6 +27,7 @@ import {
   updateEventImportance,
 } from './event.service';
 import { rankArticle, RankingResult } from './ranking.service';
+import { qualifiesForFinalEditor } from './editorial-config';
 
 export interface ProcessedArticle {
   kind: 'PROCESSED';
@@ -33,6 +35,7 @@ export interface ProcessedArticle {
   ranking: RankingResult;
   eventId: string;
   nearestEvents: NearestEvent[];
+  preliminaryScore: number;
 }
 
 export interface NeedsContentArticle {
@@ -40,7 +43,13 @@ export interface NeedsContentArticle {
   screening: ArticleScreening;
 }
 
-export type ProcessArticleResult = ProcessedArticle | NeedsContentArticle | undefined;
+export interface BelowPreliminaryThresholdArticle {
+  kind: 'BELOW_PRELIMINARY_THRESHOLD';
+  preliminaryScore: number;
+  eventId: string;
+}
+
+export type ProcessArticleResult = ProcessedArticle | NeedsContentArticle | BelowPreliminaryThresholdArticle | undefined;
 
 export async function processArticle(article: StoredArticle): Promise<ProcessArticleResult> {
   let articleForProcessing = article;
@@ -83,12 +92,24 @@ export async function processArticle(article: StoredArticle): Promise<ProcessArt
       : undefined;
   }
 
-  const analysis = await analyzeArticle(articleForProcessing);
-  const embedding = await createEventEmbedding(analysis.eventHint, analysis.summary);
+  const embedding = await createEventEmbedding(
+    articleForProcessing.title.slice(0, 1000),
+    (articleForProcessing.content ?? articleForProcessing.description ?? '').slice(0, 6000),
+  );
   const nearestEvents = await findNearestEvents(embedding, 10);
   const nearestEvent = nearestEvents[0];
   let eventId: string;
-  let existingEvent: { title: string; summary: string } | undefined;
+  const existingEvent = nearestEvent && nearestEvent.similarity >= NEW_EVENT_SIMILARITY_THRESHOLD
+    ? await getEventForComparison(nearestEvent.eventId)
+    : undefined;
+  const context = { nearestEvents, existingEvent };
+  const preliminaryAnalysis = await preliminaryRankArticle(articleForProcessing, context);
+  const preliminaryRanking = rankArticle(article.source, preliminaryAnalysis);
+  const preliminaryScore = preliminaryRanking.score;
+  const eligible = qualifiesForFinalEditor(preliminaryScore);
+  const analysis = eligible
+    ? await finalRankArticle(articleForProcessing, context, preliminaryScore)
+    : preliminaryAnalysis;
   let attachedToExistingEvent = false;
 
   if (!nearestEvent || nearestEvent.similarity < NEW_EVENT_SIMILARITY_THRESHOLD) {
@@ -101,8 +122,7 @@ export async function processArticle(article: StoredArticle): Promise<ProcessArt
     eventId = nearestEvent.eventId;
     attachedToExistingEvent = true;
   } else {
-    existingEvent = await getEventForComparison(nearestEvent.eventId);
-    const decision = await compareEvents(analysis, existingEvent);
+    const decision = await compareEvents(analysis, existingEvent!);
 
     if (decision === 'SAME_EVENT') {
       await attachArticleToEvent(article.id, nearestEvent.eventId, embedding);
@@ -127,8 +147,12 @@ export async function processArticle(article: StoredArticle): Promise<ProcessArt
   }
   const ranking = rankArticle(article.source, analysis);
 
-  await saveArticleAnalysis(article.id, analysis, ranking);
+  await saveArticleAnalysis(article.id, analysis, ranking, preliminaryScore);
   await updateEventImportance(eventId);
 
-  return { kind: 'PROCESSED', analysis, ranking, eventId, nearestEvents };
+  if (!eligible) {
+    return { kind: 'BELOW_PRELIMINARY_THRESHOLD', preliminaryScore, eventId };
+  }
+
+  return { kind: 'PROCESSED', analysis, ranking, eventId, nearestEvents, preliminaryScore };
 }

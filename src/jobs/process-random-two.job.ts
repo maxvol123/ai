@@ -36,6 +36,11 @@ async function run(): Promise<void> {
       continue;
     }
 
+    if (processed.kind === 'BELOW_PRELIMINARY_THRESHOLD') {
+      console.log(`Below preliminary threshold (${processed.preliminaryScore}/10): ${article.title}`);
+      continue;
+    }
+
     const { analysis, ranking } = processed;
     if (ranking.score < 5) {
       console.log(`Below Telegram threshold (${ranking.score}/10): ${article.source} — ${article.title}`);
