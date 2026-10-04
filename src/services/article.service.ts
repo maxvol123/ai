@@ -3,10 +3,21 @@ import { Article } from '../types/article';
 import { ArticleAnalysis, ArticleScreening } from './analysis.service';
 import { RankingResult } from './ranking.service';
 import { REVIEW_THRESHOLD, qualifiesForReview } from './editorial-config';
+import { validateTelegramCaption } from './telegram-caption';
+import { normalizeImageUrl } from './article-image';
 
 export async function saveArticles(articles: Article[]) {
+  const normalized = articles.map(article => ({ ...article, imageUrl: normalizeImageUrl(article.imageUrl, article.url) }));
+  for (const article of normalized) {
+    if (article.imageUrl) {
+      const existing = await prisma.article.findUnique({ where: { url: article.url }, select: { imageUrl: true } });
+      if (existing && !normalizeImageUrl(existing.imageUrl, article.url)) {
+        await prisma.article.updateMany({ where: { url: article.url, imageUrl: existing.imageUrl }, data: { imageUrl: article.imageUrl } });
+      }
+    }
+  }
   return prisma.article.createManyAndReturn({
-    data: articles,
+    data: normalized,
     skipDuplicates: true,
   });
 }
@@ -96,7 +107,11 @@ export async function saveTelegramMessageId(
 }
 
 export async function saveTelegramPost(articleId: string, telegramPost: string): Promise<void> {
-  await prisma.article.update({ where: { id: articleId }, data: { telegramPost } });
+  if (!validateTelegramCaption(telegramPost).valid) throw new Error('Invalid Telegram caption');
+  const saved = await prisma.article.updateMany({
+    where: { id: articleId, status: 'ANALYZED', telegramPost: null }, data: { telegramPost },
+  });
+  if (saved.count !== 1) throw new Error(`Draft already saved or article ${articleId} is not reviewable`);
 }
 
 export async function setArticleApproval(
@@ -104,7 +119,8 @@ export async function setArticleApproval(
   approved: boolean,
 ): Promise<boolean> {
   const result = await prisma.article.updateMany({
-    where: { id: articleId, status: 'ANALYZED', preliminaryScore: { gte: REVIEW_THRESHOLD } },
+    where: { id: articleId, status: 'ANALYZED', preliminaryScore: { gte: REVIEW_THRESHOLD },
+      ...(approved ? { telegramPost: { not: null } } : {}) },
     data: { status: approved ? 'APPROVED' : 'REJECTED' },
   });
 
@@ -115,6 +131,8 @@ export async function getApprovedArticleForPublishing(articleId: string) {
   return prisma.article.findFirst({
     where: { id: articleId, status: 'APPROVED' },
     select: {
+      id: true,
+      imageUrl: true,
       title: true,
       preliminaryScore: true,
       url: true,
@@ -130,10 +148,10 @@ export async function getApprovedArticleForPublishing(articleId: string) {
   });
 }
 
-export async function markArticlePublished(articleId: string): Promise<boolean> {
+export async function markArticlePublished(articleId: string, telegramMessageId: number): Promise<boolean> {
   const result = await prisma.article.updateMany({
     where: { id: articleId, status: 'APPROVED' },
-    data: { status: 'PUBLISHED', publishedAt: new Date() },
+    data: { status: 'PUBLISHED', publishedAt: new Date(), telegramMessageId },
   });
 
   return result.count === 1;

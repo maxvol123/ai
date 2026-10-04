@@ -1,5 +1,6 @@
 declare module 'rss-parser' {
   interface FeedItem {
+    [key: string]: unknown;
     title?: string;
     link?: string;
     contentSnippet?: string;
@@ -11,6 +12,8 @@ declare module 'rss-parser' {
   }
 
   export default class Parser {
+    constructor(options?: { customFields?: { item?: Array<string | [string, string, { keepArray: boolean }]> } });
     parseURL(url: string): Promise<Feed>;
+    parseString(xml: string): Promise<Feed>;
   }
 }

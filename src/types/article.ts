@@ -4,6 +4,7 @@ export interface Article {
   url: string;
   description?: string | null;
   content?: string | null;
+  imageUrl?: string | null;
   publishedAt?: Date | null;
 }
 

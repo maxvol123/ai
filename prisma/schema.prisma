@@ -15,6 +15,7 @@ model Article {
   url         String   @unique
   description String?
   content     String?
+  imageUrl    String?
 
   score       Float?
   preliminaryScore Float?

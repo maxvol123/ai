@@ -1,8 +1,16 @@
 import Parser from 'rss-parser';
 import * as cheerio from 'cheerio';
 import { Article } from '../types/article';
+import { extractFeedImage } from '../services/article-image';
 
-const parser = new Parser();
+export const rssParser = new Parser({ customFields: { item: [
+  'image', 'imageUrl', 'description', 'summary', 'content:encoded',
+  ['media:content', 'media:content', { keepArray: true }],
+  ['media:thumbnail', 'media:thumbnail', { keepArray: true }],
+  ['media:group', 'media:group', { keepArray: true }],
+  ['enclosure', 'enclosures', { keepArray: true }],
+  ['link', 'atomLinks', { keepArray: true }],
+] } });
 
 // Request 60 items so the database can deduplicate the first 30 already
 // processed items and pass the next batch through the workflow.
@@ -20,7 +28,7 @@ export async function collectRSS(
   source: string,
   feedUrl: string,
 ): Promise<Article[]> {
-  const feed = await parser.parseURL(feedUrl);
+  const feed = await rssParser.parseURL(feedUrl);
 
   return feed.items
     .filter((item) => item.title && item.link)
@@ -29,6 +37,7 @@ export async function collectRSS(
       source,
       title: decodeHtmlEntities(item.title)!,
       url: item.link!,
+      imageUrl: extractFeedImage(item, item.link!),
       description: decodeHtmlEntities(item.contentSnippet),
       publishedAt: item.pubDate ? new Date(item.pubDate) : undefined,
     }));

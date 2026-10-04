@@ -2,7 +2,6 @@ import 'dotenv/config';
 import {
   getApprovedArticleForPublishing,
   markArticlePublished,
-  saveTelegramPost,
   setArticleApproval,
 } from '../services/article.service';
 import {
@@ -11,9 +10,8 @@ import {
   publishArticleToChannel,
   TelegramCallbackQuery,
 } from '../services/telegram.service';
-import { writeTelegramPost } from '../services/telegram-writer.service';
 
-async function handleCallback(callback: TelegramCallbackQuery): Promise<void> {
+export async function handleCallback(callback: TelegramCallbackQuery): Promise<void> {
   const match = callback.data?.match(/^(approve|reject):([a-z0-9]+)$/i);
 
   if (!match) {
@@ -31,15 +29,15 @@ async function handleCallback(callback: TelegramCallbackQuery): Promise<void> {
       throw new Error(`Approved article ${articleId} was not found`);
     }
 
-    const telegramPost = await writeTelegramPost(article);
-    await saveTelegramPost(articleId, telegramPost);
-    await publishArticleToChannel({ ...article, telegramPost });
-    await markArticlePublished(articleId);
+    const messageId = await publishArticleToChannel(article);
+    if (!await markArticlePublished(articleId, messageId)) {
+      throw new Error(`Article ${articleId} sent as message ${messageId}, but publication status was not saved`);
+    }
   }
 
   await safelyAnswerCallback(
     callback.id,
-    changed ? (action === 'approve' ? 'Published to channel' : 'Article rejected') : 'Already reviewed',
+    changed ? (action === 'approve' ? 'Published to channel' : 'Article rejected') : 'Already reviewed or no saved draft; request a new review if needed',
   );
 }
 
@@ -69,7 +67,9 @@ export async function runTelegramApprovalJob(): Promise<void> {
   }
 }
 
-runTelegramApprovalJob().catch((error: unknown) => {
-  console.error(error);
-  process.exitCode = 1;
-});
+if (require.main === module) {
+  runTelegramApprovalJob().catch((error: unknown) => {
+    console.error(error);
+    process.exitCode = 1;
+  });
+}

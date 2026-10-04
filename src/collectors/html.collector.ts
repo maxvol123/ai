@@ -1,6 +1,7 @@
 import * as cheerio from 'cheerio';
 import { Article } from '../types/article';
 import { ARTICLES_PER_SOURCE } from './rss.collector';
+import { extractEmbeddedImage } from '../services/article-image';
 
 export interface HtmlSource {
   source: string;
@@ -60,6 +61,8 @@ export async function collectHtmlNews(source: HtmlSource): Promise<Article[]> {
       title,
       url,
       description,
+      imageUrl: extractEmbeddedImage(card.html() || $(element).html(), source.url)
+        ?? articles.get(url)?.imageUrl ?? null,
       publishedAt: publishedAt && !Number.isNaN(publishedAt.valueOf()) ? publishedAt : undefined,
     });
   });

@@ -8,6 +8,9 @@ const requests = [];
 class OpenAI {
   responses = { create: async (request) => {
     requests.push(request);
+    if (request.instructions.startsWith('TELEGRAM OUTPUT RULES')) {
+      return { output_text: 'News\n\nSummary.\n\nWhy it matters: Impact.\n\nSource: OpenAI\n\n#OpenAI #Models #Research' };
+    }
     return { output_text: JSON.stringify({ decision: 'PASS', impact: 8, novelty: 8,
       reach: 8, expected_attention: 8, confidence: 90, event_hint: 'Event',
       category: 'AI', summary: 'Summary', why_it_matters: 'Impact' }) };
@@ -21,7 +24,7 @@ const { qualifiesForReview } = require('../src/services/editorial-config');
 const article = { title: 'News', source: 'OpenAI', url: 'https://example.com' };
 const context = { nearestEvents: [{ title: 'Prior event', similarity: 0.8 }] };
 
-test('ranking receives only compact fields and writing makes no model call', async () => {
+test('ranking receives only compact fields and the caption writer uses the screening model', async () => {
   await analysis.screenArticle(article);
   const full = { ...article, content: 'SECRET_FULL_BODY', description: 'LONG_DESCRIPTION'.repeat(1000), summary: 'Extracted facts', category: 'Research' };
   await analysis.analyzeArticle(full, context);
@@ -34,8 +37,9 @@ test('ranking receives only compact fields and writing makes no model call', asy
   assert.ok(requests[1].input.includes('Prior event'));
   assert.ok(!requests[1].input.includes('SECRET_FULL_BODY'));
   const post = await writeTelegramPost({ ...article, preliminaryScore: 6.5, summary: 'Summary', whyItMatters: 'Impact' });
-  assert.equal(post, 'News\n\nSummary\n\nWhy it matters: Impact\n\nSource: OpenAI');
-  assert.equal(requests.length, 2);
+  assert.ok(post.includes('Source: <a href="https://example.com/">OpenAI</a>'));
+  assert.equal(requests.length, 3);
+  assert.equal(requests[2].model, 'screening-model');
 });
 
 test('ranking bounds descriptions and event context without falling back to full content', async () => {

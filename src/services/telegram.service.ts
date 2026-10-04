@@ -1,11 +1,19 @@
 import { ArticleAnalysis, ArticleScreening } from './analysis.service';
 import { RankingResult } from './ranking.service';
+import { prisma } from '../db/prisma';
+import { saveTelegramPost } from './article.service';
+import { fetchArticlePage } from './article-content.service';
+import { writeTelegramPost } from './telegram-writer.service';
+import { assertSafeSavedCaption, escapeHtml, validateTelegramCaption } from './telegram-caption';
+import { normalizeImageUrl } from './article-image';
 
 interface TelegramMessage {
   message_id: number;
 }
 
 export interface TelegramPostArticle {
+  id: string;
+  imageUrl?: string | null;
   title: string;
   url: string;
   source: string;
@@ -18,29 +26,6 @@ interface TelegramResponse<T> {
   ok: boolean;
   result: T;
   description?: string;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
-function renderPostWithSourceLink(post: string, source: string, url: string): string {
-  const sourceLine = `Source: ${source}`;
-  const normalized = /^Source:.*$/m.test(post)
-    ? post.replace(/^Source:.*$/m, sourceLine)
-    : post.replace(/(\n\n)(?=#)/, `$1${sourceLine}\n\n`);
-  const withFallback = normalized === post && !post.includes(sourceLine)
-    ? `${post}\n\n${sourceLine}`
-    : normalized;
-
-  return escapeHtml(withFallback).replace(
-    escapeHtml(sourceLine),
-    `Source: <a href="${escapeHtml(url)}">${escapeHtml(source)}</a>`,
-  );
 }
 
 export interface TelegramCallbackQuery {
@@ -81,42 +66,52 @@ async function telegramRequest<T>(
 }
 
 export async function sendApprovalRequest(
-  article: { id: string; source: string; title: string; url: string },
+  article: { id: string; source: string; title: string; url: string; imageUrl?: string | null },
   analysis: ArticleAnalysis,
-  ranking: RankingResult,
+  _ranking: RankingResult,
 ): Promise<number> {
   const { approvalChatId } = getTelegramConfig();
 
   if (!approvalChatId) {
     throw new Error('CHAT_ID must be set');
   }
-  const recommendation = ranking.recommendedForPublish ? 'Recommend publishing' : 'Recommend skipping';
-  const text = [
-    `New article from <a href="${escapeHtml(article.url)}">${escapeHtml(article.source)}</a>`,
-    '',
-    escapeHtml(article.title),
-    '',
-    `Ranking score: ${ranking.score}/10`,
-    `Impact: ${analysis.impact} · Novelty: ${analysis.novelty} · Reach: ${analysis.reach}`,
-    `Authority: ${ranking.sourceAuthority} · Expected attention: ${analysis.expectedAttention}`,
-    `Confidence: ${analysis.confidence}% · Event: ${analysis.eventHint}`,
-    `Category: ${analysis.category}`,
-    `Summary: ${analysis.summary}`,
-    `Why it matters: ${analysis.whyItMatters}`,
-    `AI: ${recommendation}`,
-    '',
-  ].join('\n');
+  const stored = await prisma.article.findUniqueOrThrow({ where: { id: article.id } });
+  if (stored.status !== 'ANALYZED') throw new Error('Article is not awaiting review');
+  let imageUrl = normalizeImageUrl(stored.imageUrl, stored.url) ?? normalizeImageUrl(article.imageUrl, article.url);
+  if (!imageUrl) {
+    // Reuse the page fetched by screening when available.
+    try { imageUrl = (await fetchArticlePage(article)).imageUrl; }
+    catch (error) { console.warn('[article] article=' + article.id + ' image enrichment failed: ' + String(error)); }
+  }
+  if (imageUrl && imageUrl !== stored.imageUrl) {
+    await prisma.article.update({ where: { id: article.id }, data: { imageUrl } });
+  }
+  let text = stored.telegramPost;
+  if (!text) {
+    text = await writeTelegramPost({ ...stored, summary: analysis.summary, whyItMatters: analysis.whyItMatters });
+    await saveTelegramPost(article.id, text);
+  }
+  assertSafeSavedCaption(text, stored.source, stored.url);
 
-  const message = await telegramRequest<TelegramMessage>('sendMessage', {
-    chat_id: approvalChatId,
-    text: text.slice(0, 4096),
-    parse_mode: 'HTML',
-    reply_markup: {
+  const reply_markup = {
       inline_keyboard: [[
         { text: '✅ Approve', callback_data: `approve:${article.id}` },
         { text: '❌ Reject', callback_data: `reject:${article.id}` },
       ]],
-    },
+    };
+  if (imageUrl) {
+    try {
+      const photo = await telegramRequest<TelegramMessage>('sendPhoto', {
+        chat_id: approvalChatId, photo: imageUrl, caption: text, parse_mode: 'HTML', reply_markup,
+      });
+      return photo.message_id;
+    } catch (error) {
+      const summary = String(error).replaceAll(process.env.HTTPAPI_TG ?? '<unset>', '[redacted]');
+      console.warn(`[telegram] article=${article.id} imageUrl=${imageUrl} review photo failed: ${summary}; falling back to text`);
+    }
+  }
+  const message = await telegramRequest<TelegramMessage>('sendMessage', {
+    chat_id: approvalChatId, text, disable_web_page_preview: true, parse_mode: 'HTML', reply_markup,
   });
 
   return message.message_id;
@@ -156,21 +151,30 @@ export async function publishArticleToChannel(article: TelegramPostArticle): Pro
     throw new Error('TELEGRAM_CHANNEL_ID must be set');
   }
 
-  // telegramPost is the editorially prepared publication text. The fallback
-  // keeps articles analyzed before this field was introduced publishable.
-  const fallbackPost = [
-    article.title,
-    article.summary,
-    article.whyItMatters ? `Why it matters: ${article.whyItMatters}` : null,
-  ].filter((line): line is string => Boolean(line)).join('\n\n');
-  const post = article.telegramPost?.trim() || fallbackPost;
-  const text = renderPostWithSourceLink(post, article.source, article.url);
+  const text = article.telegramPost;
+  if (!text || !validateTelegramCaption(text).valid) {
+    throw new Error(`Article ${article.id} has no valid reviewed draft`);
+  }
+  assertSafeSavedCaption(text, article.source, article.url);
+  if (article.imageUrl) {
+    try {
+      console.log(`[telegram] article=${article.id} sending photo`);
+      const photo = await telegramRequest<TelegramMessage>('sendPhoto', {
+        chat_id: channelId, photo: article.imageUrl, caption: text, parse_mode: 'HTML',
+      });
+      return photo.message_id;
+    } catch (error) {
+      const summary = (error instanceof Error ? error.message : String(error))
+        .replaceAll(process.env.HTTPAPI_TG ?? '<unset>', '[redacted]');
+      console.warn(`[telegram] article=${article.id} imageUrl=${article.imageUrl} photo failed: ${summary}; falling back to text`);
+    }
+  }
 
   const message = await telegramRequest<TelegramMessage>('sendMessage', {
     chat_id: channelId,
-    text: text.slice(0, 4096),
+    text,
     parse_mode: 'HTML',
-    disable_web_page_preview: false,
+    disable_web_page_preview: true,
   });
 
   return message.message_id;
