@@ -15,19 +15,17 @@ function mock(path, exports) {
   require.cache[id] = { id, filename: id, loaded: true, exports };
 }
 mock('../src/services/analysis.service', {
-  screenArticle: async () => { calls.push('screen'); return { decision, reason: 'test' }; },
-  preliminaryRankArticle: async (_, context) => {
-    calls.push('preliminary');
+  screenArticle: async () => { calls.push('screen'); return { decision, reason: 'test', summary: 'Extracted summary', category: 'AI' }; },
+  analyzeArticle: async (article, context) => {
+    calls.push('ranking');
+    assert.equal(article.summary, 'Extracted summary');
+    assert.equal(article.category, 'AI');
+    assert.equal(article.content, undefined);
     assert.equal(context.nearestEvents[0].title, 'Existing');
     return { ...analysis, impact: preliminaryScore };
   },
-  finalRankArticle: async (_, context, score) => {
-    calls.push('final');
-    assert.ok(score >= 6.5);
-    return analysis;
-  },
-  compareEvents: async () => 'SAME_EVENT',
-  updateEventFromArticle: async () => ({ title: 'Event', summary: 'Summary' }),
+  compareEvents: async () => { calls.push('compare'); return 'SAME_EVENT'; },
+  updateEventFromArticle: async () => { calls.push('update'); return { title: 'Event', summary: 'Summary' }; },
 });
 mock('../src/services/article.service', {
   saveArticleScreening: async () => {}, saveArticleContent: async () => {},
@@ -50,18 +48,19 @@ mock('../src/services/ranking.service', {
 const { processArticle } = require('../src/services/news-pipeline.service');
 const article = { id: 'article', source: 'OpenAI', title: 'News', url: 'https://example.com' };
 
-test('pipeline gates final ranking at 6.5 after embedding and event lookup', async () => {
+test('ranking runs once and last for every passing article; review threshold remains 6.5', async () => {
   for (const candidate of [6.49, 6.5, 8]) {
     for (const match of [0.5, 0.8, 0.95]) {
       calls.length = 0;
       preliminaryScore = candidate;
       similarity = match;
       const result = await processArticle(article);
-      assert.deepEqual(calls.slice(0, 4), ['screen', 'embedding', 'lookup', 'preliminary']);
-      assert.equal(calls.includes('final'), candidate >= 6.5);
+      assert.deepEqual(calls.slice(0, 3), ['screen', 'embedding', 'lookup']);
+      assert.equal(calls.at(-1), 'ranking');
+      assert.equal(calls.filter(call => call === 'ranking').length, 1);
       assert.equal(result.kind, candidate >= 6.5 ? 'PROCESSED' : 'BELOW_PRELIMINARY_THRESHOLD');
       assert.equal(saved[3], candidate);
-      assert.equal(saved[2].score, candidate >= 6.5 ? 8 : candidate);
+      assert.equal(saved[2].score, candidate);
     }
   }
 });

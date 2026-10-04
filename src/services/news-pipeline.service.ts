@@ -1,7 +1,6 @@
 import { StoredArticle } from '../types/article';
 import {
-  preliminaryRankArticle,
-  finalRankArticle,
+  analyzeArticle,
   ArticleAnalysis,
   ArticleScreening,
   compareEvents,
@@ -27,7 +26,7 @@ import {
   updateEventImportance,
 } from './event.service';
 import { rankArticle, RankingResult } from './ranking.service';
-import { qualifiesForFinalEditor } from './editorial-config';
+import { qualifiesForReview } from './editorial-config';
 
 export interface ProcessedArticle {
   kind: 'PROCESSED';
@@ -102,27 +101,23 @@ export async function processArticle(article: StoredArticle): Promise<ProcessArt
   const existingEvent = nearestEvent && nearestEvent.similarity >= NEW_EVENT_SIMILARITY_THRESHOLD
     ? await getEventForComparison(nearestEvent.eventId)
     : undefined;
-  const context = { nearestEvents, existingEvent };
-  const preliminaryAnalysis = await preliminaryRankArticle(articleForProcessing, context);
-  const preliminaryRanking = rankArticle(article.source, preliminaryAnalysis);
-  const preliminaryScore = preliminaryRanking.score;
-  const eligible = qualifiesForFinalEditor(preliminaryScore);
-  const analysis = eligible
-    ? await finalRankArticle(articleForProcessing, context, preliminaryScore)
-    : preliminaryAnalysis;
+  const development = {
+    eventHint: article.title,
+    summary: (screening.summary?.trim() || article.description || '').slice(0, 1500),
+  };
   let attachedToExistingEvent = false;
 
   if (!nearestEvent || nearestEvent.similarity < NEW_EVENT_SIMILARITY_THRESHOLD) {
     eventId = await createEventForArticle(article, embedding, {
-      title: analysis.eventHint,
-      summary: analysis.summary,
+      title: development.eventHint,
+      summary: development.summary,
     });
   } else if (nearestEvent.similarity > AUTO_ATTACH_SIMILARITY_THRESHOLD) {
     await attachArticleToEvent(article.id, nearestEvent.eventId, embedding);
     eventId = nearestEvent.eventId;
     attachedToExistingEvent = true;
   } else {
-    const decision = await compareEvents(analysis, existingEvent!);
+    const decision = await compareEvents(development, existingEvent!);
 
     if (decision === 'SAME_EVENT') {
       await attachArticleToEvent(article.id, nearestEvent.eventId, embedding);
@@ -130,22 +125,35 @@ export async function processArticle(article: StoredArticle): Promise<ProcessArt
       attachedToExistingEvent = true;
     } else {
       eventId = await createEventForArticle(article, embedding, {
-        title: analysis.eventHint,
-        summary: analysis.summary,
+        title: development.eventHint,
+        summary: development.summary,
       });
     }
   }
 
   if (attachedToExistingEvent) {
     const eventToUpdate = existingEvent ?? await getEventForComparison(eventId);
-    const updatedEvent = await updateEventFromArticle(eventToUpdate, analysis);
+    const updatedEvent = await updateEventFromArticle(eventToUpdate, development);
     const updatedEmbedding = await createEventEmbedding(
       updatedEvent.title,
       updatedEvent.summary,
     );
     await updateEventDetails(eventId, updatedEvent, updatedEmbedding);
   }
+  const analysis = await analyzeArticle({
+    title: article.title,
+    description: article.description,
+    summary: development.summary,
+    source: article.source,
+    category: screening.category,
+  }, { nearestEvents, existingEvent });
   const ranking = rankArticle(article.source, analysis);
+  const preliminaryScore = ranking.score;
+  const eligible = qualifiesForReview(ranking.score);
+
+  if (!attachedToExistingEvent) {
+    await updateEventDetails(eventId, { title: analysis.eventHint, summary: analysis.summary }, embedding);
+  }
 
   await saveArticleAnalysis(article.id, analysis, ranking, preliminaryScore);
   await updateEventImportance(eventId);

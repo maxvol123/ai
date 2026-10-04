@@ -2,7 +2,7 @@ import { prisma } from '../db/prisma';
 import { Article } from '../types/article';
 import { ArticleAnalysis, ArticleScreening } from './analysis.service';
 import { RankingResult } from './ranking.service';
-import { FINAL_EDITOR_THRESHOLD, qualifiesForFinalEditor } from './editorial-config';
+import { REVIEW_THRESHOLD, qualifiesForReview } from './editorial-config';
 
 export async function saveArticles(articles: Article[]) {
   return prisma.article.createManyAndReturn({
@@ -32,13 +32,13 @@ export async function saveArticleAnalysis(
       category: analysis.category,
       summary: analysis.summary,
       whyItMatters: analysis.whyItMatters,
-      recommendedForPublish: qualifiesForFinalEditor(preliminaryScore) && ranking.recommendedForPublish,
-      skipReason: !qualifiesForFinalEditor(preliminaryScore)
-        ? `Final editor skipped: preliminary score ${preliminaryScore}/10 is below ${FINAL_EDITOR_THRESHOLD}/10.`
+      recommendedForPublish: qualifiesForReview(preliminaryScore) && ranking.recommendedForPublish,
+      skipReason: !qualifiesForReview(preliminaryScore)
+        ? `Review skipped: ranking score ${preliminaryScore}/10 is below ${REVIEW_THRESHOLD}/10.`
         : ranking.score < 5
         ? `Telegram skipped: ranking score ${ranking.score}/10 is below the 5/10 threshold.`
         : null,
-      status: qualifiesForFinalEditor(preliminaryScore) ? 'ANALYZED' : 'PRELIMINARY_SKIPPED',
+      status: qualifiesForReview(preliminaryScore) ? 'ANALYZED' : 'PRELIMINARY_SKIPPED',
     },
   });
 }
@@ -104,7 +104,7 @@ export async function setArticleApproval(
   approved: boolean,
 ): Promise<boolean> {
   const result = await prisma.article.updateMany({
-    where: { id: articleId, status: 'ANALYZED', preliminaryScore: { gte: FINAL_EDITOR_THRESHOLD } },
+    where: { id: articleId, status: 'ANALYZED', preliminaryScore: { gte: REVIEW_THRESHOLD } },
     data: { status: approved ? 'APPROVED' : 'REJECTED' },
   });
 
