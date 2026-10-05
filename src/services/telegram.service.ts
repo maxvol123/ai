@@ -6,6 +6,23 @@ import { fetchArticlePage } from './article-content.service';
 import { writeTelegramPost } from './telegram-writer.service';
 import { assertSafeSavedCaption, escapeHtml, validateTelegramCaption } from './telegram-caption';
 import { normalizeImageUrl } from './article-image';
+import type { Article } from '@prisma/client';
+
+function formatReviewEvaluation(article: Pick<Article,
+  'score' | 'impact' | 'novelty' | 'reach' | 'expectedAttention' | 'confidence'>): string {
+  const fields = [
+    ['Score', article.score, 2, '/10'],
+    ['Impact', article.impact, 1, '/10'],
+    ['Novelty', article.novelty, 1, '/10'],
+    ['Reach', article.reach, 1, '/10'],
+    ['Expected attention', article.expectedAttention, 1, '/10'],
+    ['Confidence', article.confidence, 0, '%'],
+  ] as const;
+  const lines = fields.flatMap(([label, value, decimals, suffix]) =>
+    typeof value === 'number' && Number.isFinite(value)
+      ? [`${label}: ${value.toFixed(decimals)}${suffix}`] : []);
+  return lines.length ? ['AI evaluation', '', ...lines].join('\n') : '';
+}
 
 interface TelegramMessage {
   message_id: number;
@@ -92,6 +109,14 @@ export async function sendApprovalRequest(
     await saveTelegramPost(article.id, text);
   }
   assertSafeSavedCaption(text, stored.source, stored.url);
+  const evaluation = formatReviewEvaluation(stored);
+  const reviewText = evaluation ? `${evaluation}\n\n${text}` : text;
+  // Saved HTML is validated above. Count visible text after removing its Source
+  // link and decoding the supported entities, as Telegram's caption limit does.
+  const captionLength = reviewText.replace(/<[^>]*>/g, '')
+    .replace(/&(amp|lt|gt|quot);/g, '_').length;
+  const splitPhotoReview = captionLength > 1024;
+  let evaluationSent = false;
 
   const reply_markup = {
       inline_keyboard: [[
@@ -102,16 +127,20 @@ export async function sendApprovalRequest(
   if (imageUrl) {
     try {
       const photo = await telegramRequest<TelegramMessage>('sendPhoto', {
-        chat_id: approvalChatId, photo: imageUrl, caption: text, parse_mode: 'HTML', reply_markup,
+        chat_id: approvalChatId, photo: imageUrl,
+        caption: splitPhotoReview ? evaluation : reviewText, parse_mode: 'HTML',
+        ...(splitPhotoReview ? {} : { reply_markup }),
       });
-      return photo.message_id;
+      if (!splitPhotoReview) return photo.message_id;
+      evaluationSent = true;
     } catch (error) {
       const summary = String(error).replaceAll(process.env.HTTPAPI_TG ?? '<unset>', '[redacted]');
       console.warn(`[telegram] article=${article.id} imageUrl=${imageUrl} review photo failed: ${summary}; falling back to text`);
     }
   }
   const message = await telegramRequest<TelegramMessage>('sendMessage', {
-    chat_id: approvalChatId, text, disable_web_page_preview: true, parse_mode: 'HTML', reply_markup,
+    chat_id: approvalChatId, text: evaluationSent ? text : reviewText,
+    disable_web_page_preview: true, parse_mode: 'HTML', reply_markup,
   });
 
   return message.message_id;

@@ -42,7 +42,8 @@ const { extractImageUrl, fetchArticleContent, fetchArticlePage } = require('../s
 const { validateTelegramCaption, renderCaption } = require('../src/services/telegram-caption');
 const { writeTelegramPost } = require('../src/services/telegram-writer.service');
 const { publishArticleToChannel, sendApprovalRequest } = require('../src/services/telegram.service');
-const { saveArticles } = require('../src/services/article.service');
+const { saveArticles, saveArticleAnalysis } = require('../src/services/article.service');
+const { rankArticle } = require('../src/services/ranking.service');
 const { handleCallback } = require('../src/jobs/telegram-approval.job');
 const plain = (body = 'OpenAI released a model.') =>
   `New model\n\n${body}\n\nWhy it matters: Developers have another option.\n\nSource: OpenAI\n\n#OpenAI #Models #Developers`;
@@ -268,4 +269,93 @@ test('content enrichment persists metadata only when no valid stored image exist
     text: async () => '<meta property="og:image" content="/metadata.jpg"><article>' + 'text '.repeat(60) + '</article>' });
   await fetchArticleContent({ ...article });
   assert.equal(row.imageUrl, 'https://example.com/metadata.jpg');
+});
+
+const evaluationFields = { score: 8.27, impact: 9, novelty: 8.1, reach: 7.2,
+  expectedAttention: 8.3, confidence: 92 };
+const evaluation = 'AI evaluation\n\nScore: 8.27/10\nImpact: 9.0/10\nNovelty: 8.1/10\nReach: 7.2/10\nExpected attention: 8.3/10\nConfidence: 92%';
+
+test('review uses stored evaluation and approval publishes only the saved draft', async () => {
+  for (const photoFails of [false, true]) {
+    reset(); Object.assign(row, evaluationFields);
+    row.telegramPost = null; outputs = [plain()];
+    const requests = telegramFetch({ photoFails });
+    await sendApprovalRequest(article, { summary: 'Summary', whyItMatters: 'Impact', impact: 1 }, { score: 1 });
+    const review = requests.at(-1).body;
+    assert.equal(review.caption ?? review.text, `${evaluation}\n\n${caption}`);
+    assert.equal(review.reply_markup.inline_keyboard[0].length, 2);
+    assert.equal(row.telegramPost, caption);
+    await handleCallback({ id: 'callback', data: 'approve:article123' });
+    const publicRequests = requests.filter(r => r.body.chat_id === 'channel');
+    assert.ok(publicRequests.length);
+    for (const { body } of publicRequests) assert.equal(body.caption ?? body.text, caption);
+    assert.equal(modelRequests.length, 1);
+  }
+});
+
+test('text review retains available evaluation, including zeros, and omits missing values', async () => {
+  reset(); row.imageUrl = null;
+  Object.assign(row, { score: 0, impact: null, novelty: 0, reach: undefined,
+    expectedAttention: null, confidence: 0 });
+  const requests = telegramFetch(); const telegram = global.fetch;
+  global.fetch = async (url, init) => url.startsWith('https://api.telegram.org/') ? telegram(url, init) : {
+    ok: true, headers: new Headers({ 'content-type': 'text/html' }), text: async () => '',
+  };
+  await sendApprovalRequest({ ...article }, {}, {});
+  assert.equal(requests[0].body.text,
+    `AI evaluation\n\nScore: 0.00/10\nNovelty: 0.0/10\nConfidence: 0%\n\n${caption}`);
+  assert.equal(row.telegramPost, caption);
+});
+
+test('photo review caption boundary preserves the entire draft and controls, including send failures', async () => {
+  // Current saved drafts are capped at 900 raw HTML characters. Permit a longer
+  // safe fixture here to exercise the independent Telegram review caption limit.
+  const captions = require('../src/services/telegram-caption');
+  const assertSafe = captions.assertSafeSavedCaption;
+  captions.assertSafeSavedCaption = () => {};
+  try {
+    for (const length of [1024, 1025]) {
+      for (const photoFails of [false, true]) {
+        reset(); Object.assign(row, evaluationFields);
+        const visibleLength = cheerio.load(caption).text().length;
+        const draft = 'x'.repeat(length - evaluation.length - 2 - visibleLength) + caption;
+        row.telegramPost = draft;
+        const requests = telegramFetch({ photoFails });
+        const messageId = await sendApprovalRequest(article, {}, {});
+        const split = length > 1024;
+        assert.equal(requests[0].body.caption, split ? evaluation : `${evaluation}\n\n${draft}`);
+        assert.equal(requests[0].body.photo, row.imageUrl);
+        assert.equal(requests.length, split || photoFails ? 2 : 1);
+        assert.equal(messageId, split || photoFails ? 202 : 101);
+        if (split) assert.equal(requests[0].body.reply_markup, undefined);
+        const last = requests.at(-1).body;
+        assert.equal(last.text ?? last.caption, split && !photoFails ? draft : `${evaluation}\n\n${draft}`);
+        assert.deepEqual(last.reply_markup.inline_keyboard[0].map(b => b.callback_data),
+          ['approve:article123', 'reject:article123']);
+        assert.equal(row.telegramPost, draft);
+        assert.equal(updates.length, 0);
+      }
+    }
+    reset(); Object.assign(row, evaluationFields);
+    row.telegramPost = 'x'.repeat(1000) + caption;
+    const requests = telegramFetch({ textFails: true });
+    await assert.rejects(sendApprovalRequest(article, {}, {}), /sendMessage failed/);
+    assert.deepEqual(requests.map(r => r.method), ['sendPhoto', 'sendMessage']);
+  } finally {
+    captions.assertSafeSavedCaption = assertSafe;
+  }
+});
+
+test('existing ranking calculation is persisted with all evaluation fields after analysis', async () => {
+  reset();
+  const analysis = { impact: 8, novelty: 7, reach: 9, expectedAttention: 6, confidence: 80,
+    eventHint: 'Event', summary: 'Summary', category: 'AI', whyItMatters: 'Impact' };
+  const ranking = rankArticle('OpenAI', analysis);
+  assert.equal(ranking.score, 7.2);
+  await saveArticleAnalysis(article.id, analysis, ranking, ranking.score);
+  assert.equal(row.score, 7.2);
+  assert.equal(row.status, 'ANALYZED');
+  for (const field of ['impact', 'novelty', 'reach', 'expectedAttention', 'confidence']) {
+    assert.equal(row[field], analysis[field]);
+  }
 });
