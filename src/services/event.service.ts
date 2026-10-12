@@ -3,7 +3,7 @@ import { StoredArticle } from '../types/article';
 import { cosineSimilarity } from './embedding.service';
 
 export const NEW_EVENT_SIMILARITY_THRESHOLD = 0.75;
-export const AUTO_ATTACH_SIMILARITY_THRESHOLD = 0.9;
+export const REJECT_EVENT_SIMILARITY_THRESHOLD = 0.9;
 
 export interface NearestEvent {
   eventId: string;
@@ -35,7 +35,7 @@ export async function findNearestEvents(
       return [{
         eventId: event.id,
         title: event.title,
-        similarity: cosineSimilarity(embedding, eventEmbedding),
+        similarity: Math.max(0, Math.min(1, cosineSimilarity(embedding, eventEmbedding))),
       }];
     })
     .sort((left, right) => right.similarity - left.similarity)

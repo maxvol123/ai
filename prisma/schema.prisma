@@ -37,6 +37,7 @@ model Article {
   telegramMessageId      Int?
 
   embedding   Json?
+  eventSimilarity Float?
   eventId     String?
   event       Event? @relation(fields: [eventId], references: [id])
 

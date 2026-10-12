@@ -10,13 +10,14 @@ import {
 import {
   saveArticleAnalysis,
   saveArticleContent,
+  saveArticleEventSimilarity,
   saveArticleScreening,
 } from './article.service';
 import { fetchArticleContent } from './article-content.service';
 import { createEventEmbedding } from './embedding.service';
 import {
   attachArticleToEvent,
-  AUTO_ATTACH_SIMILARITY_THRESHOLD,
+  REJECT_EVENT_SIMILARITY_THRESHOLD,
   createEventForArticle,
   findNearestEvents,
   getEventForComparison,
@@ -35,6 +36,7 @@ export interface ProcessedArticle {
   eventId: string;
   nearestEvents: NearestEvent[];
   preliminaryScore: number;
+  eventSimilarity: number;
 }
 
 export interface NeedsContentArticle {
@@ -48,7 +50,13 @@ export interface BelowPreliminaryThresholdArticle {
   eventId: string;
 }
 
-export type ProcessArticleResult = ProcessedArticle | NeedsContentArticle | BelowPreliminaryThresholdArticle | undefined;
+export interface RejectedSimilarArticle {
+  kind: 'REJECTED_SIMILARITY';
+  eventSimilarity: number;
+  eventId: string;
+}
+
+export type ProcessArticleResult = ProcessedArticle | NeedsContentArticle | BelowPreliminaryThresholdArticle | RejectedSimilarArticle | undefined;
 
 export async function processArticle(article: StoredArticle): Promise<ProcessArticleResult> {
   let articleForProcessing = article;
@@ -97,6 +105,12 @@ export async function processArticle(article: StoredArticle): Promise<ProcessArt
   );
   const nearestEvents = await findNearestEvents(embedding, 10);
   const nearestEvent = nearestEvents[0];
+  const eventSimilarity = nearestEvent?.similarity ?? 0;
+  const rejected = eventSimilarity > REJECT_EVENT_SIMILARITY_THRESHOLD;
+  await saveArticleEventSimilarity(article.id, embedding, eventSimilarity, rejected ? nearestEvent.eventId : undefined);
+  if (rejected) {
+    return { kind: 'REJECTED_SIMILARITY', eventSimilarity, eventId: nearestEvent.eventId };
+  }
   let eventId: string;
   const existingEvent = nearestEvent && nearestEvent.similarity >= NEW_EVENT_SIMILARITY_THRESHOLD
     ? await getEventForComparison(nearestEvent.eventId)
@@ -112,10 +126,6 @@ export async function processArticle(article: StoredArticle): Promise<ProcessArt
       title: development.eventHint,
       summary: development.summary,
     });
-  } else if (nearestEvent.similarity > AUTO_ATTACH_SIMILARITY_THRESHOLD) {
-    await attachArticleToEvent(article.id, nearestEvent.eventId, embedding);
-    eventId = nearestEvent.eventId;
-    attachedToExistingEvent = true;
   } else {
     const decision = await compareEvents(development, existingEvent!);
 
@@ -162,5 +172,5 @@ export async function processArticle(article: StoredArticle): Promise<ProcessArt
     return { kind: 'BELOW_PRELIMINARY_THRESHOLD', preliminaryScore, eventId };
   }
 
-  return { kind: 'PROCESSED', analysis, ranking, eventId, nearestEvents, preliminaryScore };
+  return { kind: 'PROCESSED', analysis, ranking, eventId, nearestEvents, preliminaryScore, eventSimilarity };
 }

@@ -10,11 +10,12 @@ import type { Article } from '@prisma/client';
 import { assertArticleFreshForPublication } from './article-age';
 
 function formatReviewEvaluation(article: Pick<Article,
-  'score' | 'impact' | 'novelty' | 'reach' | 'expectedAttention' | 'confidence'>): string {
+  'score' | 'impact' | 'novelty' | 'reach' | 'expectedAttention' | 'confidence' | 'eventSimilarity'>): string {
   const fields = [
     ['Score', article.score, 2, '/10'],
     ['Impact', article.impact, 1, '/10'],
     ['Novelty', article.novelty, 1, '/10'],
+    ['Event similarity', article.eventSimilarity, 3, '/1'],
     ['Reach', article.reach, 1, '/10'],
     ['Expected attention', article.expectedAttention, 1, '/10'],
     ['Confidence', article.confidence, 0, '%'],

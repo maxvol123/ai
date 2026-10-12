@@ -43,7 +43,7 @@ const { extractImageUrl, fetchArticleContent, fetchArticlePage } = require('../s
 const { countTelegramWords, validateTelegramCaption, renderCaption } = require('../src/services/telegram-caption');
 const { writeTelegramPost } = require('../src/services/telegram-writer.service');
 const { publishArticleToChannel, sendApprovalRequest } = require('../src/services/telegram.service');
-const { saveArticles, saveArticleAnalysis } = require('../src/services/article.service');
+const { saveArticles, saveArticleAnalysis, saveArticleEventSimilarity } = require('../src/services/article.service');
 const { rankArticle } = require('../src/services/ranking.service');
 const { handleCallback } = require('../src/jobs/telegram-approval.job');
 const { assertArticleFreshForPublication } = require('../src/services/article-age');
@@ -349,6 +349,28 @@ test('content enrichment persists metadata only when no valid stored image exist
     text: async () => '<meta property="og:image" content="/metadata.jpg"><article>' + 'text '.repeat(60) + '</article>' });
   await fetchArticleContent({ ...article });
   assert.equal(row.imageUrl, 'https://example.com/metadata.jpg');
+});
+
+test('similar event rejection persists the match and prevents review', async () => {
+  reset();
+  await saveArticleEventSimilarity(article.id, [1, 0], 0.95, 'existing-event');
+  assert.equal(row.eventSimilarity, 0.95);
+  assert.equal(row.eventId, 'existing-event');
+  assert.deepEqual(row.embedding, [1, 0]);
+  assert.equal(row.status, 'REJECTED');
+  assert.equal(row.recommendedForPublish, false);
+  assert.match(row.skipReason, /0.95.*exceeds 0.9/);
+  const requests = telegramFetch();
+  await assert.rejects(sendApprovalRequest(article, {}, {}), /not awaiting review/);
+  assert.equal(requests.length, 0);
+});
+
+test('review displays event similarity on the 0–1 scale', async () => {
+  reset();
+  row.eventSimilarity = 0.9;
+  const requests = telegramFetch();
+  await sendApprovalRequest(article, {}, {});
+  assert.match(requests[0].body.caption, /Event similarity: 0.900\/1/);
 });
 
 const evaluationFields = { score: 8.27, impact: 9, novelty: 8.1, reach: 7.2,

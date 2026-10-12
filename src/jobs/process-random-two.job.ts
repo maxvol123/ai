@@ -31,6 +31,11 @@ async function run(): Promise<void> {
       continue;
     }
 
+    if (processed.kind === 'REJECTED_SIMILARITY') {
+      console.log(`Rejected by event similarity (${processed.eventSimilarity}/1): ${article.title}`);
+      continue;
+    }
+
     if (processed.kind === 'NEEDS_CONTENT') {
       console.log(`Needs content: ${article.source} — ${article.title}`);
       continue;

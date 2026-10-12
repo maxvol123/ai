@@ -26,6 +26,11 @@ export async function runCollectJob(): Promise<void> {
       continue;
     }
 
+    if (processed.kind === 'REJECTED_SIMILARITY') {
+      console.log(`Rejected by event similarity (${processed.eventSimilarity}/1): ${article.title}`);
+      continue;
+    }
+
     if (processed.kind === 'NEEDS_CONTENT') {
       const messageId = await sendNeedsContentRequest(article, processed.screening);
       await saveTelegramMessageId(article.id, messageId);

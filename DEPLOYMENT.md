@@ -1,6 +1,8 @@
 # Telegram image captions
 
-The ranking, analysis, screening rules, event handling and review threshold are unchanged.
+Event similarity is now stored as `Article.eventSimilarity` in the range 0–1 and displayed in review evaluations. After screening and event lookup, similarity strictly above 0.9 rejects the article before event updates, ranking or Telegram review. Exactly 0.9 continues through event comparison. No matching events means similarity 0. Rejected articles retain their embedding, matching event ID and rejection reason.
+
+Apply `20261012010000_add_article_event_similarity` and regenerate the Prisma client before running the updated app. Existing articles keep a null similarity until processed again.
 
 ## Changed files
 

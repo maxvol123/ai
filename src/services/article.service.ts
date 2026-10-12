@@ -22,6 +22,27 @@ export async function saveArticles(articles: Article[]) {
   });
 }
 
+export async function saveArticleEventSimilarity(
+  articleId: string,
+  embedding: number[],
+  eventSimilarity: number,
+  rejectedEventId?: string,
+): Promise<void> {
+  await prisma.article.update({
+    where: { id: articleId },
+    data: {
+      embedding,
+      eventSimilarity,
+      ...(rejectedEventId ? {
+        eventId: rejectedEventId,
+        status: 'REJECTED',
+        recommendedForPublish: false,
+        skipReason: `Event similarity ${eventSimilarity} exceeds 0.9; repeated coverage rejected.`,
+      } : {}),
+    },
+  });
+}
+
 export async function saveArticleAnalysis(
   articleId: string,
   analysis: ArticleAnalysis,

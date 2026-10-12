@@ -8,6 +8,8 @@ let preliminaryScore = 6.49;
 let decision = 'PASS';
 let similarity = 0.8;
 let saved;
+let savedSimilarity;
+let hasEvents = true;
 const analysis = { impact: 8, novelty: 8, reach: 8, expectedAttention: 8, confidence: 100,
   eventHint: 'Event', summary: 'Summary', category: 'AI' };
 function mock(path, exports) {
@@ -21,7 +23,7 @@ mock('../src/services/analysis.service', {
     assert.equal(article.summary, 'Extracted summary');
     assert.equal(article.category, 'AI');
     assert.equal(article.content, undefined);
-    assert.equal(context.nearestEvents[0].title, 'Existing');
+    assert.equal(context.nearestEvents[0]?.title, hasEvents ? 'Existing' : undefined);
     return { ...analysis, impact: preliminaryScore };
   },
   compareEvents: async () => { calls.push('compare'); return 'SAME_EVENT'; },
@@ -30,14 +32,15 @@ mock('../src/services/analysis.service', {
 mock('../src/services/article.service', {
   saveArticleScreening: async () => {}, saveArticleContent: async () => {},
   saveArticleAnalysis: async (...args) => { saved = args; },
+  saveArticleEventSimilarity: async (...args) => { calls.push('saveSimilarity'); savedSimilarity = args; },
 });
 mock('../src/services/article-content.service', { fetchArticleContent: async () => null });
 mock('../src/services/embedding.service', {
   createEventEmbedding: async () => { calls.push('embedding'); return [1, 0]; },
 });
 mock('../src/services/event.service', {
-  NEW_EVENT_SIMILARITY_THRESHOLD: 0.75, AUTO_ATTACH_SIMILARITY_THRESHOLD: 0.9,
-  findNearestEvents: async () => { calls.push('lookup'); return [{ eventId: 'event', title: 'Existing', similarity }]; },
+  NEW_EVENT_SIMILARITY_THRESHOLD: 0.75, REJECT_EVENT_SIMILARITY_THRESHOLD: 0.9,
+  findNearestEvents: async () => { calls.push('lookup'); return hasEvents ? [{ eventId: 'event', title: 'Existing', similarity }] : []; },
   getEventForComparison: async () => ({ title: 'Existing', summary: 'Previous facts' }),
   createEventForArticle: async () => 'new-event', attachArticleToEvent: async () => {},
   updateEventDetails: async () => {}, updateEventImportance: async () => {},
@@ -50,7 +53,7 @@ const article = { id: 'article', source: 'OpenAI', title: 'News', url: 'https://
 
 test('ranking runs once and last for every passing article; review threshold remains 6.5', async () => {
   for (const candidate of [6.49, 6.5, 8]) {
-    for (const match of [0.5, 0.8, 0.95]) {
+    for (const match of [0.5, 0.8, 0.9]) {
       calls.length = 0;
       preliminaryScore = candidate;
       similarity = match;
@@ -61,7 +64,38 @@ test('ranking runs once and last for every passing article; review threshold rem
       assert.equal(result.kind, candidate >= 6.5 ? 'PROCESSED' : 'BELOW_PRELIMINARY_THRESHOLD');
       assert.equal(saved[3], candidate);
       assert.equal(saved[2].score, candidate);
+      assert.equal(savedSimilarity[2], match);
+      assert.equal(savedSimilarity[3], undefined);
     }
+  }
+});
+
+test('similarity strictly above 0.9 rejects before comparison, event update or ranking', async () => {
+  decision = 'PASS';
+  for (const match of [0.900001, 0.95, 1]) {
+    calls.length = 0;
+    saved = undefined;
+    similarity = match;
+    const result = await processArticle(article);
+    assert.deepEqual(calls, ['screen', 'embedding', 'lookup', 'saveSimilarity']);
+    assert.deepEqual(result, { kind: 'REJECTED_SIMILARITY', eventSimilarity: match, eventId: 'event' });
+    assert.deepEqual(savedSimilarity, ['article', [1, 0], match, 'event']);
+    assert.equal(saved, undefined);
+  }
+});
+
+test('no existing events saves similarity zero and processes a new event', async () => {
+  decision = 'PASS';
+  preliminaryScore = 8;
+  hasEvents = false;
+  try {
+    const result = await processArticle(article);
+    assert.equal(result.kind, 'PROCESSED');
+    assert.equal(result.eventSimilarity, 0);
+    assert.equal(result.eventId, 'new-event');
+    assert.deepEqual(savedSimilarity, ['article', [1, 0], 0, undefined]);
+  } finally {
+    hasEvents = true;
   }
 });
 
