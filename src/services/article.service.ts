@@ -42,7 +42,6 @@ export async function saveArticleAnalysis(
       eventHint: analysis.eventHint,
       category: analysis.category,
       summary: analysis.summary,
-      whyItMatters: analysis.whyItMatters,
       recommendedForPublish: qualifiesForReview(preliminaryScore) && ranking.recommendedForPublish,
       skipReason: !qualifiesForReview(preliminaryScore)
         ? `Review skipped: ranking score ${preliminaryScore}/10 is below ${REVIEW_THRESHOLD}/10.`
@@ -140,7 +139,6 @@ export async function getApprovedArticleForPublishing(articleId: string) {
       description: true,
       content: true,
       summary: true,
-      whyItMatters: true,
       category: true,
       telegramPost: true,
       event: { select: { title: true, summary: true } },

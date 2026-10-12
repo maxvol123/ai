@@ -9,11 +9,11 @@ class OpenAI {
   responses = { create: async (request) => {
     requests.push(request);
     if (request.instructions.startsWith('TELEGRAM OUTPUT RULES')) {
-      return { output_text: 'News\n\nSummary.\n\nWhy it matters: Impact.\n\nSource: OpenAI\n\n#OpenAI #Models #Research' };
+      return { output_text: 'News\n\nSummary.\n\nSource: OpenAI\n\n#OpenAI #Models #Research' };
     }
     return { output_text: JSON.stringify({ decision: 'PASS', impact: 8, novelty: 8,
       reach: 8, expected_attention: 8, confidence: 90, event_hint: 'Event',
-      category: 'AI', summary: 'Summary', why_it_matters: 'Impact' }) };
+      category: 'AI', summary: 'Summary' }) };
   } };
 }
 const id = require.resolve('openai');
@@ -36,7 +36,7 @@ test('ranking receives only compact fields and the caption writer uses the scree
   assert.equal(input.category, 'Research');
   assert.ok(requests[1].input.includes('Prior event'));
   assert.ok(!requests[1].input.includes('SECRET_FULL_BODY'));
-  const post = await writeTelegramPost({ ...article, preliminaryScore: 6.5, summary: 'Summary', whyItMatters: 'Impact' });
+  const post = await writeTelegramPost({ ...article, preliminaryScore: 6.5, summary: 'Summary' });
   assert.ok(post.includes('Source: <a href="https://example.com/">OpenAI</a>'));
   assert.equal(requests.length, 3);
   assert.equal(requests[2].model, 'screening-model');

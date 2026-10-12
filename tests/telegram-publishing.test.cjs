@@ -39,16 +39,16 @@ mock('../src/db/prisma', { prisma: { article: {
   createManyAndReturn: async () => [],
 }}});
 const { extractImageUrl, fetchArticleContent, fetchArticlePage } = require('../src/services/article-content.service');
-const { validateTelegramCaption, renderCaption } = require('../src/services/telegram-caption');
+const { countTelegramWords, validateTelegramCaption, renderCaption } = require('../src/services/telegram-caption');
 const { writeTelegramPost } = require('../src/services/telegram-writer.service');
 const { publishArticleToChannel, sendApprovalRequest } = require('../src/services/telegram.service');
 const { saveArticles, saveArticleAnalysis } = require('../src/services/article.service');
 const { rankArticle } = require('../src/services/ranking.service');
 const { handleCallback } = require('../src/jobs/telegram-approval.job');
 const plain = (body = 'OpenAI released a model.') =>
-  `New model\n\n${body}\n\nWhy it matters: Developers have another option.\n\nSource: OpenAI\n\n#OpenAI #Models #Developers`;
+  `New model\n\n${body}\n\nSource: OpenAI\n\n#OpenAI #Models #Developers`;
 const article = { id: 'article123', url: 'https://example.com/news', source: 'OpenAI',
-  title: 'New model', summary: 'Summary', whyItMatters: 'Impact', preliminaryScore: 8 };
+  title: 'New model', summary: 'Summary', preliminaryScore: 8 };
 const caption = renderCaption(plain(), article.source, article.url);
 function reset() {
   row = { ...article, status: 'ANALYZED', imageUrl: 'https://example.com/image.jpg', telegramPost: caption };
@@ -118,6 +118,34 @@ test('writer shortens only oversized captions, once, using the configured low-co
   assert.equal(modelRequests.length, 2);
 });
 
+test('73 words are accepted and 74 words trigger regeneration even below 900 characters', async () => {
+  const atLimit = plain('word '.repeat(66).trim() + '.');
+  const overLimit = plain('word '.repeat(67).trim() + '.');
+  const rendered = renderCaption(atLimit, article.source, article.url);
+  assert.equal(countTelegramWords(rendered), 73);
+  assert.equal(validateTelegramCaption(rendered).valid, true);
+  assert.equal(countTelegramWords(renderCaption(overLimit, article.source, article.url)), 74);
+  assert.equal(validateTelegramCaption(renderCaption(overLimit, article.source, article.url)).valid, false);
+  reset(); outputs = [atLimit];
+  assert.equal(await writeTelegramPost(article), rendered);
+  assert.equal(modelRequests.length, 1);
+  reset(); outputs = [overLimit, atLimit];
+  assert.equal(await writeTelegramPost(article), rendered);
+  assert.equal(modelRequests.length, 2);
+  assert.match(modelRequests[1].instructions, /at most 73 words/);
+});
+
+test('regenerated posts over 73 words are never saved or sent for review', async () => {
+  reset(); row.telegramPost = null;
+  const overLimit = plain('word '.repeat(67).trim() + '.');
+  outputs = [overLimit, overLimit];
+  const requests = telegramFetch();
+  await assert.rejects(sendApprovalRequest(article, { summary: 'Summary' }, {}), /exceeds 73 words/);
+  assert.equal(modelRequests.length, 2);
+  assert.equal(row.telegramPost, null);
+  assert.equal(requests.length, 0);
+});
+
 test('photo succeeds or falls back with the identical saved caption and final message ID', async () => {
   reset(); let requests = telegramFetch();
   assert.equal(await publishArticleToChannel(row), 101);
@@ -165,7 +193,7 @@ test('repeat collection preserves valid images and fills missing images', async 
 test('review saves the generated draft before sending and approval publishes exactly that draft', async () => {
   reset(); row.telegramPost = null; outputs = [plain()];
   const requests = telegramFetch();
-  await sendApprovalRequest(article, { summary: 'Summary', whyItMatters: 'Impact' }, { score: 8 });
+  await sendApprovalRequest(article, { summary: 'Summary' }, { score: 8 });
   assert.equal(row.telegramPost, caption);
   assert.equal(requests[0].method, 'sendPhoto');
   assert.equal(requests[0].body.caption, row.telegramPost);
@@ -280,7 +308,7 @@ test('review uses stored evaluation and approval publishes only the saved draft'
     reset(); Object.assign(row, evaluationFields);
     row.telegramPost = null; outputs = [plain()];
     const requests = telegramFetch({ photoFails });
-    await sendApprovalRequest(article, { summary: 'Summary', whyItMatters: 'Impact', impact: 1 }, { score: 1 });
+    await sendApprovalRequest(article, { summary: 'Summary', impact: 1 }, { score: 1 });
     const review = requests.at(-1).body;
     assert.equal(review.caption ?? review.text, `${evaluation}\n\n${caption}`);
     assert.equal(review.reply_markup.inline_keyboard[0].length, 2);
@@ -349,7 +377,7 @@ test('photo review caption boundary preserves the entire draft and controls, inc
 test('existing ranking calculation is persisted with all evaluation fields after analysis', async () => {
   reset();
   const analysis = { impact: 8, novelty: 7, reach: 9, expectedAttention: 6, confidence: 80,
-    eventHint: 'Event', summary: 'Summary', category: 'AI', whyItMatters: 'Impact' };
+    eventHint: 'Event', summary: 'Summary', category: 'AI' };
   const ranking = rankArticle('OpenAI', analysis);
   assert.equal(ranking.score, 7.2);
   await saveArticleAnalysis(article.id, analysis, ranking, ranking.score);

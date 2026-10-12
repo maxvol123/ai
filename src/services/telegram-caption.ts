@@ -1,9 +1,18 @@
 export const TELEGRAM_CAPTION_TARGET_MIN = 650;
 export const TELEGRAM_CAPTION_TARGET_MAX = 850;
 export const TELEGRAM_CAPTION_HARD_MAX = 900;
+export const TELEGRAM_POST_MAX_WORDS = 73;
+
+export function countTelegramWords(post: string): number {
+  const text = post.replace(/<[^>]*>/g, '')
+    .replace(/&(amp|lt|gt|quot);/g, (_, entity: string) =>
+      ({ amp: '&', lt: '<', gt: '>', quot: '"' }[entity] ?? ''));
+  return text.trim() ? text.trim().split(/\s+/u).length : 0;
+}
 
 export function validateTelegramCaption(post: string) {
-  return { valid: post.trim().length > 0 && post.length <= TELEGRAM_CAPTION_HARD_MAX,
+  return { valid: post.trim().length > 0 && post.length <= TELEGRAM_CAPTION_HARD_MAX &&
+      countTelegramWords(post) <= TELEGRAM_POST_MAX_WORDS,
     length: post.length, maxLength: TELEGRAM_CAPTION_HARD_MAX };
 }
 

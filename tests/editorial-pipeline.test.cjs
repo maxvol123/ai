@@ -9,7 +9,7 @@ let decision = 'PASS';
 let similarity = 0.8;
 let saved;
 const analysis = { impact: 8, novelty: 8, reach: 8, expectedAttention: 8, confidence: 100,
-  eventHint: 'Event', summary: 'Summary', category: 'AI', whyItMatters: 'Impact' };
+  eventHint: 'Event', summary: 'Summary', category: 'AI' };
 function mock(path, exports) {
   const id = require.resolve(path);
   require.cache[id] = { id, filename: id, loaded: true, exports };

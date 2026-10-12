@@ -35,7 +35,6 @@ export interface TelegramPostArticle {
   url: string;
   source: string;
   summary: string | null;
-  whyItMatters: string | null;
   telegramPost: string | null;
 }
 
@@ -105,7 +104,7 @@ export async function sendApprovalRequest(
   }
   let text = stored.telegramPost;
   if (!text) {
-    text = await writeTelegramPost({ ...stored, summary: analysis.summary, whyItMatters: analysis.whyItMatters });
+    text = await writeTelegramPost({ ...stored, summary: analysis.summary });
     await saveTelegramPost(article.id, text);
   }
   assertSafeSavedCaption(text, stored.source, stored.url);

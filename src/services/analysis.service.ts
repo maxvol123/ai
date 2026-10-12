@@ -20,7 +20,6 @@ export interface ArticleAnalysis {
   eventHint: string;
   category: string;
   summary: string;
-  whyItMatters: string;
 }
 
 export type EventMatchDecision = 'SAME_EVENT' | 'RELATED' | 'DIFFERENT';
@@ -58,7 +57,6 @@ const analysisSchema = {
     event_hint: { type: 'string' },
     category: { type: 'string' },
     summary: { type: 'string' },
-    why_it_matters: { type: 'string' },
   },
   required: [
     'impact',
@@ -69,7 +67,6 @@ const analysisSchema = {
     'event_hint',
     'category',
     'summary',
-    'why_it_matters',
   ],
   additionalProperties: false,
 } as const;
@@ -191,8 +188,7 @@ Return JSON:
   "confidence": 1-100,
   "event_hint": "",
   "category": "",
-  "summary": "",
-  "why_it_matters": ""
+  "summary": ""
 }`,
     input: JSON.stringify({
       title: article.title.slice(0, 1000),
@@ -232,7 +228,6 @@ Return JSON:
     event_hint: string;
     category: string;
     summary: string;
-    why_it_matters: string;
   };
 
   return {
@@ -244,7 +239,6 @@ Return JSON:
     eventHint: result.event_hint,
     category: result.category,
     summary: result.summary,
-    whyItMatters: result.why_it_matters,
   };
 }
 

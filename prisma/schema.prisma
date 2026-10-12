@@ -32,7 +32,6 @@ model Article {
   eventHint   String?
   summary     String?
   category    String?
-  whyItMatters String?
   telegramPost String?
   recommendedForPublish Boolean?
   telegramMessageId      Int?
