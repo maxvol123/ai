@@ -6,6 +6,7 @@ process.env.OPENAI_API = 'test-key';
 process.env.HTTPAPI_TG = 'test-token';
 process.env.CHAT_ID = 'review';
 process.env.TELEGRAM_CHANNEL_ID = 'channel';
+process.env.MAX_ARTICLE_AGE_HOURS = '24';
 process.env.SCREENING_MODEL = 'cheap-screening-model';
 
 function mock(path, exports) {
@@ -45,13 +46,14 @@ const { publishArticleToChannel, sendApprovalRequest } = require('../src/service
 const { saveArticles, saveArticleAnalysis } = require('../src/services/article.service');
 const { rankArticle } = require('../src/services/ranking.service');
 const { handleCallback } = require('../src/jobs/telegram-approval.job');
+const { assertArticleFreshForPublication } = require('../src/services/article-age');
 const plain = (body = 'OpenAI released a model.') =>
   `New model\n\n${body}\n\nSource: OpenAI\n\n#OpenAI #Models #Developers`;
 const article = { id: 'article123', url: 'https://example.com/news', source: 'OpenAI',
   title: 'New model', summary: 'Summary', preliminaryScore: 8 };
 const caption = renderCaption(plain(), article.source, article.url);
 function reset() {
-  row = { ...article, status: 'ANALYZED', imageUrl: 'https://example.com/image.jpg', telegramPost: caption };
+  row = { ...article, publishedAt: new Date(), status: 'ANALYZED', imageUrl: 'https://example.com/image.jpg', telegramPost: caption };
   updates = []; modelRequests = []; outputs = [];
 }
 function telegramFetch({ photoFails = false, textFails = false } = {}) {
@@ -165,8 +167,10 @@ test('photo succeeds or falls back with the identical saved caption and final me
 test('publication state and final message ID are saved only after a successful send; duplicate callbacks do not send', async () => {
   for (const photoFails of [false, true]) {
     reset(); const requests = telegramFetch({ photoFails });
+    const sourcePublishedAt = row.publishedAt;
     await handleCallback({ id: 'callback', data: 'approve:article123' });
     assert.equal(row.status, 'PUBLISHED');
+    assert.equal(row.publishedAt, sourcePublishedAt);
     assert.equal(row.telegramMessageId, photoFails ? 202 : 101);
     const sent = requests.filter(r => r.method.startsWith('send')).length;
     await handleCallback({ id: 'duplicate', data: 'approve:article123' });
@@ -177,6 +181,54 @@ test('publication state and final message ID are saved only after a successful s
   await assert.rejects(handleCallback({ id: 'callback', data: 'approve:article123' }), /sendMessage failed/);
   assert.equal(row.status, 'APPROVED');
   assert.equal(updates.some(data => data.status === 'PUBLISHED'), false);
+});
+
+test('publication age uses configured hours and includes the exact age boundary', () => {
+  const now = Date.parse('2026-10-12T12:00:00Z');
+  try {
+    process.env.MAX_ARTICLE_AGE_HOURS = '2.5';
+    assert.doesNotThrow(() => assertArticleFreshForPublication({ publishedAt: new Date(now - 2.5 * 3_600_000) }, now));
+    assert.throws(() => assertArticleFreshForPublication({ publishedAt: new Date(now - 2.5 * 3_600_000 - 1) }, now), /older than/);
+    for (const value of ['', '0', '-1', 'invalid', 'Infinity']) {
+      process.env.MAX_ARTICLE_AGE_HOURS = value;
+      assert.throws(() => assertArticleFreshForPublication({ publishedAt: new Date(now) }, now), /positive number/);
+    }
+  } finally { process.env.MAX_ARTICLE_AGE_HOURS = '24'; }
+});
+
+test('stale and undated articles are rejected on approval without sending to the channel', async () => {
+  for (const publishedAt of [new Date(Date.now() - 25 * 3_600_000), null, new Date(NaN)]) {
+    reset(); row.publishedAt = publishedAt;
+    const requests = telegramFetch();
+    await handleCallback({ id: 'expired', data: 'approve:article123' });
+    assert.equal(row.status, 'REJECTED');
+    assert.match(row.skipReason, /Publication blocked/);
+    assert.equal(row.recommendedForPublish, false);
+    assert.deepEqual(requests.map(r => r.method), ['answerCallbackQuery']);
+    assert.match(requests[0].body.text, /Publication blocked/);
+  }
+});
+
+test('age is checked again before text fallback if a photo attempt crosses the limit', async () => {
+  reset();
+  const now = Date.now();
+  row.publishedAt = new Date(now - 24 * 3_600_000 + 1000);
+  const requests = telegramFetch({ photoFails: true });
+  const telegram = global.fetch;
+  const realNow = Date.now;
+  let currentTime = now;
+  Date.now = () => currentTime;
+  global.fetch = async (...args) => {
+    const response = await telegram(...args);
+    // Simulate the photo request taking long enough for the article to expire.
+    if (args[0].endsWith('/sendPhoto')) currentTime += 2000;
+    return response;
+  };
+  try {
+    await handleCallback({ id: 'expired', data: 'approve:article123' });
+  } finally { Date.now = realNow; }
+  assert.equal(row.status, 'REJECTED');
+  assert.deepEqual(requests.map(r => r.method), ['sendPhoto', 'answerCallbackQuery']);
 });
 
 test('repeat collection preserves valid images and fills missing images', async () => {

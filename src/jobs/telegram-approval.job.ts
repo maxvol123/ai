@@ -2,6 +2,7 @@ import 'dotenv/config';
 import {
   getApprovedArticleForPublishing,
   markArticlePublished,
+  rejectArticlePublication,
   setArticleApproval,
 } from '../services/article.service';
 import {
@@ -10,6 +11,7 @@ import {
   publishArticleToChannel,
   TelegramCallbackQuery,
 } from '../services/telegram.service';
+import { ArticlePublicationAgeError } from '../services/article-age';
 
 export async function handleCallback(callback: TelegramCallbackQuery): Promise<void> {
   const match = callback.data?.match(/^(approve|reject):([a-z0-9]+)$/i);
@@ -29,7 +31,15 @@ export async function handleCallback(callback: TelegramCallbackQuery): Promise<v
       throw new Error(`Approved article ${articleId} was not found`);
     }
 
-    const messageId = await publishArticleToChannel(article);
+    let messageId: number;
+    try {
+      messageId = await publishArticleToChannel(article);
+    } catch (error) {
+      if (!(error instanceof ArticlePublicationAgeError)) throw error;
+      await rejectArticlePublication(articleId, error.message);
+      await safelyAnswerCallback(callback.id, error.message);
+      return;
+    }
     if (!await markArticlePublished(articleId, messageId)) {
       throw new Error(`Article ${articleId} sent as message ${messageId}, but publication status was not saved`);
     }

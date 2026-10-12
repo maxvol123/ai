@@ -131,6 +131,7 @@ export async function getApprovedArticleForPublishing(articleId: string) {
     where: { id: articleId, status: 'APPROVED' },
     select: {
       id: true,
+      publishedAt: true,
       imageUrl: true,
       title: true,
       preliminaryScore: true,
@@ -149,8 +150,15 @@ export async function getApprovedArticleForPublishing(articleId: string) {
 export async function markArticlePublished(articleId: string, telegramMessageId: number): Promise<boolean> {
   const result = await prisma.article.updateMany({
     where: { id: articleId, status: 'APPROVED' },
-    data: { status: 'PUBLISHED', publishedAt: new Date(), telegramMessageId },
+    data: { status: 'PUBLISHED', telegramMessageId },
   });
 
   return result.count === 1;
+}
+
+export async function rejectArticlePublication(articleId: string, reason: string): Promise<void> {
+  await prisma.article.updateMany({
+    where: { id: articleId, status: 'APPROVED' },
+    data: { status: 'REJECTED', recommendedForPublish: false, skipReason: reason },
+  });
 }

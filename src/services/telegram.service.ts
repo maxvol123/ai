@@ -7,6 +7,7 @@ import { writeTelegramPost } from './telegram-writer.service';
 import { assertSafeSavedCaption, escapeHtml, validateTelegramCaption } from './telegram-caption';
 import { normalizeImageUrl } from './article-image';
 import type { Article } from '@prisma/client';
+import { assertArticleFreshForPublication } from './article-age';
 
 function formatReviewEvaluation(article: Pick<Article,
   'score' | 'impact' | 'novelty' | 'reach' | 'expectedAttention' | 'confidence'>): string {
@@ -30,6 +31,7 @@ interface TelegramMessage {
 
 export interface TelegramPostArticle {
   id: string;
+  publishedAt: Date | null;
   imageUrl?: string | null;
   title: string;
   url: string;
@@ -184,6 +186,7 @@ export async function publishArticleToChannel(article: TelegramPostArticle): Pro
     throw new Error(`Article ${article.id} has no valid reviewed draft`);
   }
   assertSafeSavedCaption(text, article.source, article.url);
+  assertArticleFreshForPublication(article);
   if (article.imageUrl) {
     try {
       console.log(`[telegram] article=${article.id} sending photo`);
@@ -198,6 +201,7 @@ export async function publishArticleToChannel(article: TelegramPostArticle): Pro
     }
   }
 
+  assertArticleFreshForPublication(article);
   const message = await telegramRequest<TelegramMessage>('sendMessage', {
     chat_id: channelId,
     text,
