@@ -28,6 +28,7 @@ import {
 } from './event.service';
 import { rankArticle, RankingResult } from './ranking.service';
 import { qualifiesForReview } from './editorial-config';
+import { ArticlePublicationAgeError, assertArticleFreshForPublication } from './article-age';
 
 export interface ProcessedArticle {
   kind: 'PROCESSED';
@@ -59,6 +60,14 @@ export interface RejectedSimilarArticle {
 export type ProcessArticleResult = ProcessedArticle | NeedsContentArticle | BelowPreliminaryThresholdArticle | RejectedSimilarArticle | undefined;
 
 export async function processArticle(article: StoredArticle): Promise<ProcessArticleResult> {
+  try {
+    assertArticleFreshForPublication(article);
+  } catch (error) {
+    if (!(error instanceof ArticlePublicationAgeError)) throw error;
+    await saveArticleScreening(article.id, { decision: 'REJECT', reason: error.message });
+    return undefined;
+  }
+
   let articleForProcessing = article;
   let screening = await screenArticle(articleForProcessing);
 

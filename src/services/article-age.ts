@@ -1,7 +1,7 @@
 export class ArticlePublicationAgeError extends Error {}
 
 export function assertArticleFreshForPublication(
-  article: { publishedAt: Date | null | undefined },
+  article: { publishedAt?: Date | null },
   now = Date.now(),
 ): void {
   const maxHours = Number(process.env.MAX_ARTICLE_AGE_HOURS);

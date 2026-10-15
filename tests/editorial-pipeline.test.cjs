@@ -3,12 +3,14 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 process.env.OPENAI_API = 'test-key';
+process.env.MAX_ARTICLE_AGE_HOURS = '24';
 const calls = [];
 let preliminaryScore = 6.49;
 let decision = 'PASS';
 let similarity = 0.8;
 let saved;
 let savedSimilarity;
+let savedScreening;
 let hasEvents = true;
 const analysis = { impact: 8, novelty: 8, reach: 8, expectedAttention: 8, confidence: 100,
   eventHint: 'Event', summary: 'Summary', category: 'AI' };
@@ -30,11 +32,11 @@ mock('../src/services/analysis.service', {
   updateEventFromArticle: async () => { calls.push('update'); return { title: 'Event', summary: 'Summary' }; },
 });
 mock('../src/services/article.service', {
-  saveArticleScreening: async () => {}, saveArticleContent: async () => {},
+  saveArticleScreening: async (...args) => { savedScreening = args; }, saveArticleContent: async () => {},
   saveArticleAnalysis: async (...args) => { saved = args; },
   saveArticleEventSimilarity: async (...args) => { calls.push('saveSimilarity'); savedSimilarity = args; },
 });
-mock('../src/services/article-content.service', { fetchArticleContent: async () => null });
+mock('../src/services/article-content.service', { fetchArticleContent: async () => { calls.push('fetchContent'); return null; } });
 mock('../src/services/embedding.service', {
   createEventEmbedding: async () => { calls.push('embedding'); return [1, 0]; },
 });
@@ -49,7 +51,37 @@ mock('../src/services/ranking.service', {
   rankArticle: (_, value) => ({ score: value.impact, sourceAuthority: 10, recommendedForPublish: value.impact >= 7 }),
 });
 const { processArticle } = require('../src/services/news-pipeline.service');
-const article = { id: 'article', source: 'OpenAI', title: 'News', url: 'https://example.com' };
+const article = { id: 'article', source: 'OpenAI', title: 'News', url: 'https://example.com', publishedAt: new Date() };
+
+test('old or undated articles are rejected before any model or content request', async () => {
+  for (const publishedAt of [new Date(Date.now() - 25 * 3_600_000), null, undefined, new Date('invalid')]) {
+    calls.length = 0;
+    saved = undefined;
+    savedSimilarity = undefined;
+    savedScreening = undefined;
+    const result = await processArticle({ ...article, publishedAt });
+    assert.equal(result, undefined);
+    assert.deepEqual(calls, []);
+    assert.equal(saved, undefined);
+    assert.equal(savedSimilarity, undefined);
+    assert.equal(savedScreening[0], article.id);
+    assert.equal(savedScreening[1].decision, 'REJECT');
+    assert.match(savedScreening[1].reason, /older than MAX_ARTICLE_AGE_HOURS|date is missing or invalid/);
+  }
+});
+
+test('invalid age configuration stops processing before any model request', async () => {
+  calls.length = 0;
+  savedScreening = undefined;
+  process.env.MAX_ARTICLE_AGE_HOURS = 'invalid';
+  try {
+    await assert.rejects(processArticle(article), /MAX_ARTICLE_AGE_HOURS must be a positive number/);
+    assert.deepEqual(calls, []);
+    assert.equal(savedScreening, undefined);
+  } finally {
+    process.env.MAX_ARTICLE_AGE_HOURS = '24';
+  }
+});
 
 test('ranking runs once and last for every passing article; review threshold remains 6.5', async () => {
   for (const candidate of [6.49, 6.5, 8]) {
@@ -104,7 +136,7 @@ test('rejected or insufficient articles never reach ranking', async () => {
     calls.length = 0;
     decision = value;
     const result = await processArticle(article);
-    assert.deepEqual(calls, ['screen']);
+    assert.deepEqual(calls, value === 'NEEDS_CONTENT' ? ['screen', 'fetchContent'] : ['screen']);
     assert.equal(result?.kind, value === 'REJECT' ? undefined : 'NEEDS_CONTENT');
   }
 });
