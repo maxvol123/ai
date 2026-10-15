@@ -26,7 +26,8 @@
     "cheerio": "^1.2.0",
     "dotenv": "^18.0.1",
     "openai": "^7.19.0",
-    "rss-parser": "^3.13.0"
+    "rss-parser": "^3.13.0",
+    "sharp": "^0.35.5"
   },
   "devDependencies": {
     "@types/node": "^26.6.2",

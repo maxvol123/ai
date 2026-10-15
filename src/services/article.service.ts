@@ -171,7 +171,7 @@ export async function getApprovedArticleForPublishing(articleId: string) {
 export async function markArticlePublished(articleId: string, telegramMessageId: number): Promise<boolean> {
   const result = await prisma.article.updateMany({
     where: { id: articleId, status: 'APPROVED' },
-    data: { status: 'PUBLISHED', telegramMessageId },
+    data: { status: 'PUBLISHED', telegramMessageId, channelPublishedAt: new Date() },
   });
 
   return result.count === 1;

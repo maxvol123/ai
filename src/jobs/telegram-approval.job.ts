@@ -12,8 +12,13 @@ import {
   TelegramCallbackQuery,
 } from '../services/telegram.service';
 import { ArticlePublicationAgeError } from '../services/article-age';
+import { handleDigestCallback, runDailyDigestTick } from '../services/daily-digest.service';
 
 export async function handleCallback(callback: TelegramCallbackQuery): Promise<void> {
+  if (callback.data?.startsWith('digest:')) {
+    await safelyAnswerCallback(callback.id, await handleDigestCallback(callback));
+    return;
+  }
   const match = callback.data?.match(/^(approve|reject):([a-z0-9]+)$/i);
 
   if (!match) {
@@ -63,18 +68,31 @@ async function safelyAnswerCallback(callbackId: string, text: string): Promise<v
 
 export async function runTelegramApprovalJob(): Promise<void> {
   let offset: number | undefined;
+  let digestRunning = false;
+  const tick = async () => {
+    if (digestRunning) return;
+    digestRunning = true;
+    try { await runDailyDigestTick(); }
+    catch (error) { console.error('[digest]', error); }
+    finally { digestRunning = false; }
+  };
+  // Independent of long polling and collection; UTC boundaries checked every second.
+  const digestTimer = setInterval(() => void tick(), 1000);
+  void tick();
 
-  for (;;) {
-    const updates = await getTelegramUpdates(offset);
+  try {
+    for (;;) {
+      const updates = await getTelegramUpdates(offset);
 
-    for (const update of updates) {
-      offset = update.update_id + 1;
+      for (const update of updates) {
+        offset = update.update_id + 1;
 
-      if (update.callback_query) {
-        await handleCallback(update.callback_query);
+        if (update.callback_query) {
+          await handleCallback(update.callback_query);
+        }
       }
     }
-  }
+  } finally { clearInterval(digestTimer); }
 }
 
 if (require.main === module) {

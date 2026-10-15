@@ -50,7 +50,7 @@ interface TelegramResponse<T> {
 export interface TelegramCallbackQuery {
   id: string;
   data?: string;
-  message?: TelegramMessage;
+  message?: TelegramMessage & { chat?: { id: number | string }; };
 }
 
 function getTelegramConfig() {
@@ -65,7 +65,7 @@ function getTelegramConfig() {
   return { token, approvalChatId, channelId };
 }
 
-async function telegramRequest<T>(
+export async function telegramRequest<T>(
   method: string,
   payload: Record<string, unknown>,
 ): Promise<T> {
@@ -74,6 +74,7 @@ async function telegramRequest<T>(
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(45_000),
   });
   const data = (await response.json()) as TelegramResponse<T>;
 
@@ -82,6 +83,22 @@ async function telegramRequest<T>(
   }
 
   return data.result;
+}
+
+export async function sendDigestPhoto(photo: Buffer, caption: string): Promise<number> {
+  const { token, channelId } = getTelegramConfig();
+  if (!channelId) throw new Error('TELEGRAM_CHANNEL_ID must be set');
+  const form = new FormData();
+  form.set('chat_id', channelId);
+  form.set('photo', new Blob([new Uint8Array(photo)], { type: 'image/png' }), 'dontskip.png');
+  form.set('caption', caption);
+  form.set('parse_mode', 'HTML');
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+    method: 'POST', body: form, signal: AbortSignal.timeout(45_000),
+  });
+  const data = await response.json() as TelegramResponse<TelegramMessage>;
+  if (!response.ok || !data.ok) throw new Error(`Telegram digest upload failed: ${data.description ?? response.statusText}`);
+  return data.result.message_id;
 }
 
 export async function sendApprovalRequest(

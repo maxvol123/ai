@@ -42,7 +42,7 @@ mock('../src/db/prisma', { prisma: { article: {
 const { extractImageUrl, fetchArticleContent, fetchArticlePage } = require('../src/services/article-content.service');
 const { countTelegramWords, validateTelegramCaption, renderCaption } = require('../src/services/telegram-caption');
 const { writeTelegramPost } = require('../src/services/telegram-writer.service');
-const { publishArticleToChannel, sendApprovalRequest } = require('../src/services/telegram.service');
+const { publishArticleToChannel, sendApprovalRequest, sendDigestPhoto } = require('../src/services/telegram.service');
 const { saveArticles, saveArticleAnalysis, saveArticleEventSimilarity } = require('../src/services/article.service');
 const { rankArticle } = require('../src/services/ranking.service');
 const { handleCallback } = require('../src/jobs/telegram-approval.job');
@@ -68,6 +68,24 @@ function telegramFetch({ photoFails = false, textFails = false } = {}) {
   };
   return requests;
 }
+
+test('digest uploads PNG bytes with its HTML caption as one multipart photo', async () => {
+  const photo = Buffer.from('PNG fixture');
+  const caption = '#DONTSKIP\n\n<a href="https://example.com/one">First</a>\n\nSecond';
+  global.fetch = async (url, init) => {
+    assert.ok(url.endsWith('/sendPhoto'));
+    assert.ok(init.body instanceof FormData);
+    assert.equal(init.body.get('chat_id'), 'channel');
+    assert.equal(init.body.get('caption'), caption);
+    assert.equal(init.body.get('parse_mode'), 'HTML');
+    assert.equal(init.body.get('photo').type, 'image/png');
+    assert.deepEqual(Buffer.from(await init.body.get('photo').arrayBuffer()), photo);
+    return { ok: true, json: async () => ({ ok: true, result: { message_id: 999 } }) };
+  };
+  assert.equal(await sendDigestPhoto(photo, caption), 999);
+  global.fetch = async () => ({ ok: false, json: async () => ({ ok: false, description: 'rejected' }) });
+  await assert.rejects(sendDigestPhoto(photo, caption), /digest upload failed/);
+});
 
 test('image metadata priority, fallback variants, whitespace and relative URLs', () => {
   const extract = html => extractImageUrl(cheerio.load(html), article.url);
