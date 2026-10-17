@@ -89,12 +89,58 @@ test('owner can toggle exactly two saved choices; foreign, stale and forged butt
   assert.equal(row.selectedIds.length, 0);
   assert.match(await handleDigestCallback(callback(0), at('18:55:00')), /1\/2/);
   await handleDigestCallback(callback(1), at('18:55:00'));
-  assert.match(await handleDigestCallback(callback(2), at('18:55:00')), /Уже выбраны/);
+  assert.match(await handleDigestCallback(callback(2), at('18:55:00')), /Two stories are already selected/);
   await handleDigestCallback(callback(0), at('18:55:00'));
   await handleDigestCallback(callback(2), at('18:55:00'));
   assert.deepEqual(row.selectedIds, ['article1', 'article2']);
-  assert.match(await handleDigestCallback(callback(2), at('19:00:00')), /завершён/);
+  assert.match(await handleDigestCallback(callback(2), at('19:00:00')), /Selection has closed/);
   assert.deepEqual(row.selectedIds, ['article1', 'article2']);
+});
+
+test('cancellation button follows all articles and survives selection keyboard refresh', async () => {
+  reset(); await runDailyDigestTick(at('18:50:00'));
+  const pages = requests.filter(request => request.method === 'sendMessage');
+  for (const page of pages.slice(0, -1)) {
+    assert.ok(page.body.reply_markup.inline_keyboard.flat().every(button => !button.callback_data.endsWith(':cancel')));
+  }
+  assert.equal(pages.at(-1).body.reply_markup.inline_keyboard.at(-1)[0].callback_data, 'digest:2026-10-15:cancel');
+  await handleDigestCallback(callback(11, '123', 3), at('18:55:00'));
+  assert.equal(requests.at(-1).body.reply_markup.inline_keyboard.at(-1)[0].callback_data, 'digest:2026-10-15:cancel');
+});
+
+test('cancelling persists across ticks, blocks manual and automatic publication, and removes every keyboard', async () => {
+  for (const selectedIds of [[], ['article1', 'article2']]) {
+    reset(); await runDailyDigestTick(at('18:50:00'));
+    row.selectedIds = selectedIds;
+    const cancel = { ...callback(0, '123', 3), data: 'digest:2026-10-15:cancel' };
+    assert.match(await handleDigestCallback(cancel, at('18:55:00')), /has been cancelled/);
+    assert.equal(row.status, 'CANCELLED');
+    const removals = requests.filter(request => request.method === 'editMessageReplyMarkup');
+    assert.deepEqual(removals.map(request => request.body.message_id), row.reviewMessageIds);
+    assert.ok(removals.every(request => request.body.reply_markup.inline_keyboard.length === 0));
+    assert.match(await handleDigestCallback(cancel, at('18:56:00')), /has been cancelled/);
+    assert.match(await handleDigestCallback(callback(1), at('18:56:00')), /has been cancelled/);
+    const requestCount = requests.length;
+    await runDailyDigestTick(at('18:59:00'));
+    await runDailyDigestTick(at('19:00:00'));
+    await runDailyDigestTick(at('20:00:00'));
+    assert.equal(requests.length, requestCount);
+    assert.equal(uploads.length, 0);
+    assert.equal(row.status, 'CANCELLED');
+  }
+});
+
+test('foreign, forged, stale and post-deadline cancellation buttons cannot cancel an issue', async () => {
+  reset(); await runDailyDigestTick(at('18:50:00'));
+  const cancel = { ...callback(0, '123', 3), data: 'digest:2026-10-15:cancel' };
+  await handleDigestCallback({ ...cancel, message: { message_id: 3, chat: { id: 'other' } } }, at('18:55:00'));
+  await handleDigestCallback({ ...cancel, message: { message_id: 900, chat: { id: '123' } } }, at('18:55:00'));
+  await handleDigestCallback({ ...cancel, data: 'digest:2026-10-14:cancel' }, at('18:55:00'));
+  await handleDigestCallback(cancel, at('19:00:00'));
+  assert.equal(row.status, 'OPEN');
+  row.status = 'PUBLISHING';
+  await handleDigestCallback(cancel, at('18:55:00'));
+  assert.equal(row.status, 'PUBLISHING');
 });
 
 test('19:00 sends one real PNG with selected titles and links, with duplicate tick protection', async () => {

@@ -43,10 +43,14 @@ export function digestCaption(candidates: DigestCandidate[]): string {
 }
 
 function keyboard(date: string, items: DigestCandidate[], selected: string[], page: number) {
-  return { inline_keyboard: items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((item, index) => [{
+  const inline_keyboard = items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((item, index) => [{
     text: `${selected.includes(item.id) ? '✅' : '▫️'} ${page * PAGE_SIZE + index + 1}. ${item.title.slice(0, 65)}`,
     callback_data: `digest:${date}:${page * PAGE_SIZE + index}`,
-  }]) };
+  }]);
+  if (page === Math.ceil(items.length / PAGE_SIZE) - 1) {
+    inline_keyboard.push([{ text: "🚫 Cancel today's digest", callback_data: `digest:${date}:cancel` }]);
+  }
+  return { inline_keyboard };
 }
 
 async function notify(text: string, extra: Record<string, unknown> = {}) {
@@ -57,35 +61,52 @@ async function notify(text: string, extra: Record<string, unknown> = {}) {
 }
 
 export async function handleDigestCallback(callback: TelegramCallbackQuery, now = new Date()): Promise<string> {
-  if (String(callback.message?.chat?.id) !== process.env.CHAT_ID) return 'Выбор доступен только в чате владельца';
-  const match = callback.data?.match(/^digest:(\d{4}-\d{2}-\d{2}):(\d+)$/);
-  if (!match) return 'Неизвестная новость';
+  if (String(callback.message?.chat?.id) !== process.env.CHAT_ID) return 'Selection is only available in the owner chat';
+  const match = callback.data?.match(/^digest:(\d{4}-\d{2}-\d{2}):(\d+|cancel)$/);
+  if (!match) return 'Unknown story';
   const [, date, index] = match;
   const schedule = digestSchedule(now);
-  if (date !== schedule.date || now < schedule.selection || now >= schedule.publish) return 'Выбор завершён';
+  if (date !== schedule.date || now < schedule.selection || now >= schedule.publish) return 'Selection has closed';
   const digest = await prisma.dailyDigest.findUnique({ where: { date } });
-  if (!digest || digest.status !== 'OPEN' || !digest.reviewMessageIds.includes(callback.message!.message_id)) return 'Выбор недоступен';
+  if (!digest || !digest.reviewMessageIds.includes(callback.message!.message_id)) return 'Selection is unavailable';
+  if (digest.status === 'CANCELLED') return "Today's #DONTSKIP digest has been cancelled";
+  if (digest.status !== 'OPEN') return 'Selection is unavailable';
+  if (index === 'cancel') {
+    const result = await prisma.dailyDigest.updateMany({
+      where: { date, status: 'OPEN', version: digest.version },
+      data: { status: 'CANCELLED', version: { increment: 1 } },
+    });
+    if (!result.count) return 'The digest status has changed. Please tap again';
+    // Cancellation is persisted first; failed keyboard cleanup cannot undo it.
+    const edits = await Promise.allSettled(digest.reviewMessageIds.map(message_id =>
+      telegramRequest('editMessageReplyMarkup', { chat_id: process.env.CHAT_ID,
+        message_id, reply_markup: { inline_keyboard: [] } })));
+    for (const edit of edits) {
+      if (edit.status === 'rejected') console.warn('[digest] Could not remove cancelled issue keyboard', edit.reason);
+    }
+    return "Today's #DONTSKIP digest has been cancelled";
+  }
   const items = digest.candidates as unknown as DigestCandidate[];
   const item = items[Number(index)];
-  if (!item) return 'Новость не найдена';
+  if (!item) return 'Story not found';
   let selected = digest.selectedIds;
   if (selected.includes(item.id)) selected = selected.filter(id => id !== item.id);
   else {
-    if (selected.length >= 2) return 'Уже выбраны две новости. Сначала снимите одну галочку';
+    if (selected.length >= 2) return 'Two stories are already selected. Deselect one first';
     selected = [...selected, item.id];
   }
   const result = await prisma.dailyDigest.updateMany({
     where: { date, status: 'OPEN', version: digest.version },
     data: { selectedIds: selected, version: { increment: 1 } },
   });
-  if (!result.count) return 'Выбор изменился, нажмите ещё раз';
+  if (!result.count) return 'The selection has changed. Please tap again';
   // The saved selection remains valid even if Telegram cannot refresh a keyboard.
   try {
     const page = Math.floor(Number(index) / PAGE_SIZE);
     await telegramRequest('editMessageReplyMarkup', { chat_id: process.env.CHAT_ID,
       message_id: callback.message!.message_id, reply_markup: keyboard(date, items, selected, page) });
   } catch (error) { console.warn('[digest] Could not refresh selection keyboard', error); }
-  return `Выбрано ${selected.length}/2. Публикация в 19:00 UTC`;
+  return `Selected ${selected.length}/2. Publication at 19:00 UTC`;
 }
 
 export async function runDailyDigestTick(now = new Date()): Promise<void> {
@@ -105,7 +126,7 @@ export async function runDailyDigestTick(now = new Date()): Promise<void> {
     digest = await prisma.dailyDigest.upsert({ where: { date: schedule.date }, update: {},
       create: { date: schedule.date, candidates, status: candidates.length >= 2 ? 'OPEN' : 'SKIPPED' } });
     if (digest.status === 'SKIPPED') {
-      await notify('Сегодня до 18:50 UTC опубликовано меньше двух новостей. Выпуск #DONTSKIP пропущен.');
+      await notify('Fewer than two stories were published today by 18:50 UTC. The #DONTSKIP digest has been skipped.');
     }
   }
   if (!digest || digest.status !== 'OPEN') return;
@@ -114,7 +135,7 @@ export async function runDailyDigestTick(now = new Date()): Promise<void> {
     for (let page = digest.reviewMessageIds.length; page < Math.ceil(items.length / PAGE_SIZE); page++) {
       if (now.getTime() + Date.now() - startedAt >= schedule.publish.getTime()) break;
       const text = [`#DONTSKIP — ${schedule.date} (UTC)`,
-        'Выберите 2 новости. Повторное нажатие снимает выбор. Публикация в 19:00 UTC. Если выбрано меньше двух, бот доберёт новости с самым высоким общим score.', '',
+        "Select 2 stories. Tap again to deselect. Publication at 19:00 UTC. If fewer than two stories are selected, the bot fills the remaining slots with the highest overall scores. To cancel today's digest, use the button at the end of the list.", '',
         ...items.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE).map((item, index) =>
           `${page * PAGE_SIZE + index + 1}. <a href="${escapeHtml(item.url)}">${escapeHtml(item.title.slice(0, 250))}</a>`),
       ].join('\n\n');
@@ -137,7 +158,7 @@ export async function runDailyDigestTick(now = new Date()): Promise<void> {
   if (selected.length !== 2) {
     const result = await prisma.dailyDigest.updateMany({ where: { date: schedule.date, status: 'OPEN' },
       data: { status: 'SKIPPED' } });
-    if (result.count) await notify('Недостаточно выбранных новостей и новостей с общей оценкой для автоматического выбора. Сегодняшний #DONTSKIP пропущен.');
+    if (result.count) await notify("Not enough selected or scored stories to complete today's #DONTSKIP digest. The digest has been skipped.");
     return;
   }
   // Render before claiming delivery, so a rendering failure/crash can be retried safely.
@@ -156,7 +177,7 @@ export async function runDailyDigestTick(now = new Date()): Promise<void> {
     await prisma.dailyDigest.update({ where: { date: schedule.date },
       data: { status: 'PUBLISHED', telegramMessageId: messageId } });
   } catch (error) {
-    await notify('Не удалось подтвердить публикацию #DONTSKIP. Проверьте канал перед повторной отправкой.');
+    await notify('Could not confirm #DONTSKIP publication. Check the channel before sending again.');
     throw error;
   }
 }
