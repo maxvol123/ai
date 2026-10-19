@@ -160,6 +160,28 @@ test('19:00 sends one real PNG with selected titles and links, with duplicate ti
   assert.equal(uploads.length, 1);
 });
 
+test('selected digest publishes using the actual bundled template', async () => {
+  const previous = process.env.DONTSKIP_TEMPLATE_PATH;
+  process.env.DONTSKIP_TEMPLATE_PATH = path.resolve(__dirname, '../assets/dontskip-template.png');
+  try {
+    reset();
+    await runDailyDigestTick(at('18:50:00'));
+    await handleDigestCallback(callback(1), at('18:55:00'));
+    await handleDigestCallback(callback(2), at('18:55:00'));
+    await runDailyDigestTick(at('19:00:00'));
+    assert.equal(row.status, 'PUBLISHED');
+    assert.deepEqual(row.selectedIds, ['article1', 'article2']);
+    assert.equal(uploads.length, 1);
+    const metadata = await sharp(uploads[0].image).metadata();
+    assert.equal(metadata.width, 1200);
+    assert.equal(metadata.height, 1200);
+    await runDailyDigestTick(at('19:01:00'));
+    assert.equal(uploads.length, 1);
+  } finally {
+    process.env.DONTSKIP_TEMPLATE_PATH = previous;
+  }
+});
+
 test('one manual choice is retained and the second story is filled by overall score', async () => {
   reset(); await runDailyDigestTick(at('19:00:00'));
   assert.equal(row, null);
@@ -239,7 +261,7 @@ test('image handles Unicode, escaped text, overflowing tokens, UTC date and miss
   assert.throws(() => digestCaption([{ title: 'Bad', url: 'javascript:alert(1)' }, candidates[0]]), /Invalid/);
 });
 
-test('PNG template is preserved under text overlays and invalid template sizes fail', async () => {
+test('PNG template is preserved under text overlays and non-square templates fail', async () => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'dontskip-template-'));
   const previous = process.env.DONTSKIP_TEMPLATE_PATH;
   const template = path.join(directory, 'template.png');
@@ -260,11 +282,59 @@ test('PNG template is preserved under text overlays and invalid template sizes f
       }
     }
     assert.ok(textPixels > 100, 'headline must be composited onto the template');
-    await sharp({ create: { width: 600, height: 600, channels: 3, background: 'black' } }).png().toFile(template);
-    await assert.rejects(generateDontSkipImage(params), /1200x1200/);
+    await sharp({ create: { width: 600, height: 500, channels: 3, background: 'black' } }).png().toFile(template);
+    await assert.rejects(generateDontSkipImage(params), /must be square/);
   } finally {
     if (previous === undefined) delete process.env.DONTSKIP_TEMPLATE_PATH;
     else process.env.DONTSKIP_TEMPLATE_PATH = previous;
     await fs.rm(directory, { recursive: true, force: true });
+  }
+});
+
+test('square templates are scaled to 1200x1200 while preserving the background', async () => {
+  const previous = process.env.DONTSKIP_TEMPLATE_PATH;
+  const template = path.join(fixtureDirectory, 'resized-template.png');
+  process.env.DONTSKIP_TEMPLATE_PATH = template;
+  try {
+    for (const size of [600, 1254]) {
+      await sharp({ create: { width: size, height: size, channels: 3, background: '#123456' } })
+        .png().toFile(template);
+      const image = await generateDontSkipImage({ firstHeadline: 'First', secondHeadline: 'Second', date: at('19:00:00') });
+      const metadata = await sharp(image).metadata();
+      assert.equal(metadata.width, 1200);
+      assert.equal(metadata.height, 1200);
+      const pixel = await sharp(image).extract({ left: 600, top: 550, width: 1, height: 1 })
+        .removeAlpha().raw().toBuffer();
+      assert.deepEqual([...pixel], [18, 52, 86]);
+    }
+  } finally {
+    process.env.DONTSKIP_TEMPLATE_PATH = previous;
+  }
+});
+
+test('render failure retains selected stories and retries publication once after template repair', async () => {
+  const previous = process.env.DONTSKIP_TEMPLATE_PATH;
+  const template = path.join(fixtureDirectory, 'repaired-template.png');
+  process.env.DONTSKIP_TEMPLATE_PATH = template;
+  try {
+    reset();
+    await runDailyDigestTick(at('18:50:00'));
+    await handleDigestCallback(callback(1), at('18:55:00'));
+    await handleDigestCallback(callback(2), at('18:55:00'));
+    await sharp({ create: { width: 600, height: 500, channels: 3, background: 'black' } })
+      .png().toFile(template);
+    await assert.rejects(runDailyDigestTick(at('19:00:00')), /must be square/);
+    assert.equal(row.status, 'OPEN');
+    assert.deepEqual(row.selectedIds, ['article1', 'article2']);
+    assert.equal(uploads.length, 0);
+    await sharp({ create: { width: 1254, height: 1254, channels: 3, background: 'black' } })
+      .png().toFile(template);
+    await runDailyDigestTick(at('19:01:00'));
+    assert.equal(row.status, 'PUBLISHED');
+    assert.deepEqual(row.selectedIds, ['article1', 'article2']);
+    await runDailyDigestTick(at('19:02:00'));
+    assert.equal(uploads.length, 1);
+  } finally {
+    process.env.DONTSKIP_TEMPLATE_PATH = previous;
   }
 });

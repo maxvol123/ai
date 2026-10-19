@@ -37,8 +37,8 @@ export async function generateDontSkipImage(params: {
   const dateSvg = `<text x="600" y="1180" text-anchor="middle" font-family="Consolas, Liberation Mono, DejaVu Sans Mono, monospace" font-size="26" font-weight="400" letter-spacing="1.5" fill="#7e8f89">${escapeHtml(date)}</text>`;
   if (hasTemplate) {
     const metadata = await sharp(templatePath).metadata();
-    if (metadata.width !== 1200 || metadata.height !== 1200) {
-      throw new Error('DONTSKIP template must be 1200x1200 pixels');
+    if (!metadata.width || metadata.width !== metadata.height) {
+      throw new Error('DONTSKIP template must be square');
     }
     const headlinesSvg = `<svg width="1200" height="1200" xmlns="http://www.w3.org/2000/svg">
       ${renderLines(params.firstHeadline, 260)}
@@ -46,6 +46,7 @@ export async function generateDontSkipImage(params: {
       ${dateSvg}
     </svg>`;
     return sharp(templatePath)
+      .resize(1200, 1200)
       .composite([{ input: Buffer.from(headlinesSvg), top: 0, left: 0 }])
       .png().toBuffer();
   }
