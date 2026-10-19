@@ -109,12 +109,12 @@ test('Atom image enclosures and Media RSS groups are retained', async () => {
 });
 
 test('RSS collector carries the image into Article without fetching article HTML', async () => {
-  const original = rssParser.parseURL;
-  rssParser.parseURL = async () => rssParser.parseString(rss('<media:thumbnail url="/thumb.jpg"/>'));
+  const original = global.fetch;
+  global.fetch = async () => new Response(rss('<media:thumbnail url="/thumb.jpg"/>'));
   try {
     const articles = await collectRSS('Example', 'https://example.com/feed');
     assert.equal(articles[0].imageUrl, 'https://example.com/thumb.jpg');
-  } finally { rssParser.parseURL = original; }
+  } finally { global.fetch = original; }
 });
 
 test('HTML collector extracts source card images from its existing listing fetch', async () => {

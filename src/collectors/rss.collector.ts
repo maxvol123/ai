@@ -28,7 +28,21 @@ export async function collectRSS(
   source: string,
   feedUrl: string,
 ): Promise<Article[]> {
-  const feed = await rssParser.parseURL(feedUrl);
+  // parseURL passes compressed HTTP bodies straight to the XML parser.
+  // DeepMind serves gzip to rss-parser; fetch decodes HTTP compression first.
+  const response = await fetch(feedUrl, {
+    headers: {
+      'User-Agent': 'rss-parser',
+      Accept: 'application/rss+xml, application/atom+xml, application/xml, text/xml, */*',
+    },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(60_000),
+  });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`RSS ${feedUrl} returned HTTP ${response.status}`);
+  }
+  const feed = await rssParser.parseString(await response.text());
 
   return feed.items
     .filter((item) => item.title && item.link)
