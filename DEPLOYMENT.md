@@ -8,7 +8,19 @@ The existing `npm run telegram:poll` process also runs the daily scheduler. Keep
 
 Run `npm ci`, `npx prisma generate`, `npx prisma migrate deploy`, `npm run build`, `npm test`, then restart `ai-news-telegram-poll` and the collector. Migration `20261015000000_add_daily_digest` adds `DailyDigest` and `Article.channelPublishedAt`. No production migrations are applied by the tests. Previously published articles have no reliable channel publication timestamp and are excluded; the first complete digest day is the first UTC day after deployment. Source publication timestamps remain unchanged.
 
-Set `TELEGRAM_CHANNEL_ID` to a channel username (`@name`) or its `-100…` chat ID to link to channel posts. Otherwise source links are used. Put the logo at `assets/tikrd-logo.png` or set `DONTSKIP_LOGO_PATH`; without a logo the image uses the TIKRD wordmark. Sharp needs its platform binaries, and the host should have Arial or a compatible sans-serif font installed. No OpenAI calls are used for digests.
+Set `TELEGRAM_CHANNEL_ID` to a channel username (`@name`) or its `-100…` chat ID to link to channel posts. Otherwise source links are used. Put the logo at `assets/tikrd-logo.png` or set `DONTSKIP_LOGO_PATH`; without a logo the image uses the TIKRD wordmark. Sharp needs its platform binaries. Digest text uses `DejaVu Sans, Arial, sans-serif`; install DejaVu Sans in the environment running the bot so Cyrillic text does not render as missing-glyph squares. Sharp resolves SVG fonts through fontconfig; declaring `font-family` does not install or embed the font. No OpenAI calls are used for digests.
+
+On Ubuntu/Debian, install the fonts and restart the renderer process:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y fontconfig fonts-dejavu-core
+sudo fc-cache -f
+fc-match 'DejaVu Sans'
+sudo systemctl restart ai-news-telegram-poll
+```
+
+`fc-match` should report `DejaVuSans.ttf`. If the bot runs in a container, install the font packages inside its image and rebuild/restart the container.
 
 Candidates and selections are persisted. Restarting between 18:50 and 19:00 resumes unsent selection pages; restarting later the same UTC day completes any missing selections by score and publishes the issue when two eligible stories are available. Older candidate snapshots without scores are enriched from Article by their original IDs only. Old dates are not published automatically. `PUBLISHING` is deliberately never retried automatically after a Telegram timeout or a failed database write: check the channel first and reconcile the record manually to prevent duplicate posts. Image rendering failures are safe to retry automatically. A crash between sending a selection page and saving its message ID may leave an extra selection page; only persisted message IDs accept selections.
 

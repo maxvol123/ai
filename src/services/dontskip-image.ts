@@ -20,7 +20,7 @@ export function wrapHeadline(text: string, maxChars = 32): string[] {
 
 function renderLines(headline: string, startY: number): string {
   return wrapHeadline(headline).map((line, index) =>
-    `<text x="600" y="${startY + index * 70}" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="58" font-weight="700" fill="#ffffff">${escapeHtml(line)}</text>`).join('');
+    `<text x="600" y="${startY + index * 70}" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="58" font-weight="700" fill="#ffffff">${escapeHtml(line)}</text>`).join('');
 }
 
 export async function generateDontSkipImage(params: {
@@ -34,7 +34,7 @@ export async function generateDontSkipImage(params: {
   try { await access(templatePath); hasTemplate = true; } catch {
     if (process.env.DONTSKIP_TEMPLATE_PATH) throw new Error(`Cannot read DONTSKIP_TEMPLATE_PATH: ${templatePath}`);
   }
-  const dateSvg = `<text x="600" y="1180" text-anchor="middle" font-family="Consolas, Liberation Mono, DejaVu Sans Mono, monospace" font-size="26" font-weight="400" letter-spacing="1.5" fill="#7e8f89">${escapeHtml(date)}</text>`;
+  const dateSvg = `<text x="600" y="1180" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="26" font-weight="400" letter-spacing="1.5" fill="#7e8f89">${escapeHtml(date)}</text>`;
   if (hasTemplate) {
     const metadata = await sharp(templatePath).metadata();
     if (!metadata.width || metadata.width !== metadata.height) {
@@ -58,13 +58,13 @@ export async function generateDontSkipImage(params: {
   const svg = `<svg width="1200" height="1200" xmlns="http://www.w3.org/2000/svg">
     <rect width="1200" height="1200" fill="#030303"/>
     ${renderLines(params.firstHeadline, 260)}
-    <text x="600" y="540" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="130" font-weight="900" fill="#ffffff">#DONT</text>
-    <text x="600" y="660" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="130" font-weight="900" fill="#28f5a5">SKIP</text>
+    <text x="600" y="540" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="130" font-weight="900" fill="#ffffff">#DONT</text>
+    <text x="600" y="660" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="130" font-weight="900" fill="#28f5a5">SKIP</text>
     ${renderLines(params.secondHeadline, 780)}
     <ellipse cx="600" cy="1310" rx="720" ry="300" fill="#04110e" stroke="#27f4b0" stroke-width="8"/>
     <ellipse cx="600" cy="1285" rx="680" ry="270" fill="none" stroke="#27f4b0" stroke-width="2" opacity="0.45"/>
     ${dateSvg}
-    ${hasLogo ? '' : '<text x="600" y="1135" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" fill="#ffffff">TIKRD</text>'}
+    ${hasLogo ? '' : '<text x="600" y="1135" text-anchor="middle" font-family="DejaVu Sans, Arial, sans-serif" font-size="34" font-weight="700" fill="#ffffff">TIKRD</text>'}
   </svg>`;
   const image = sharp(Buffer.from(svg));
   if (hasLogo) {
