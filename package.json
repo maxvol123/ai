@@ -8,6 +8,7 @@
     "start": "ts-node src/app.ts",
     "build": "tsc",
     "test": "node --test tests/*.test.cjs",
+    "digest:preview": "ts-node src/jobs/preview-dontskip.job.ts",
     "collect": "ts-node src/app.ts",
     "collect:once": "ts-node src/jobs/collect-once.ts",
     "analyze:latest": "ts-node src/jobs/analyze-latest.job.ts",

@@ -12,7 +12,15 @@ function mock(module, exports) {
   const id = require.resolve(module);
   require.cache[id] = { id, filename: id, loaded: true, exports };
 }
-let row, requests, articleQuery, uploads, failUpload;
+let row, requests, articleQuery, uploads, failUpload, publishedCandidates;
+let copyCalls = 0, failCopy = false;
+mock('../src/services/dontskip-copy.service', {
+  generateDigestDisplay: async stories => {
+    copyCalls++;
+    if (failCopy) throw new Error('copy unavailable');
+    return stories.map(item => ({ id: item.id, kicker: 'NEWS', displayHeadline: `EDITED STORY ${item.id.toUpperCase()}` }));
+  },
+});
 const candidates = Array.from({ length: 12 }, (_, i) => ({ id: `article${i}`,
   title: `Story <${i}> & details`, url: `https://example.com/${i}`, telegramMessageId: 100 + i, score: i / 2 }));
 const db = {
@@ -34,7 +42,7 @@ const db = {
   },
 };
 mock('../src/db/prisma', { prisma: { dailyDigest: db, article: {
-  findMany: async query => { articleQuery = query; return candidates; },
+  findMany: async query => { articleQuery = query; return publishedCandidates ?? candidates; },
 }}});
 mock('../src/services/telegram.service', {
   telegramRequest: async (method, body) => { requests.push({ method, body }); return { message_id: requests.length }; },
@@ -44,8 +52,8 @@ mock('../src/services/telegram.service', {
     return 999;
   },
 });
-const { runDailyDigestTick, handleDigestCallback, digestSchedule, digestCaption, selectDigestCandidates } = require('../src/services/daily-digest.service');
-const { generateDontSkipImage, wrapHeadline } = require('../src/services/dontskip-image');
+const { runDailyDigestTick, handleDigestCallback, digestSchedule, digestCaption, selectDigestCandidates, digestImageHeadline } = require('../src/services/daily-digest.service');
+const { generateDontSkipImage, layoutHeadline } = require('../src/services/dontskip-image');
 let fixtureDirectory;
 const originalTemplate = process.env.DONTSKIP_TEMPLATE_PATH;
 before(async () => {
@@ -60,7 +68,7 @@ after(async () => {
   await fs.rm(fixtureDirectory, { recursive: true, force: true });
 });
 const at = time => new Date(`2026-10-15T${time}Z`);
-function reset() { row = null; requests = []; uploads = []; articleQuery = null; failUpload = false; }
+function reset() { row = null; requests = []; uploads = []; articleQuery = null; failUpload = false; copyCalls = 0; failCopy = false; publishedCandidates = undefined; }
 function callback(index, chat = '123', message_id = 1) {
   return { id: 'callback', data: `digest:2026-10-15:${index}`, message: { message_id, chat: { id: chat } } };
 }
@@ -95,6 +103,53 @@ test('owner can toggle exactly two saved choices; foreign, stale and forged butt
   assert.deepEqual(row.selectedIds, ['article1', 'article2']);
   assert.match(await handleDigestCallback(callback(2), at('19:00:00')), /Selection has closed/);
   assert.deepEqual(row.selectedIds, ['article1', 'article2']);
+});
+
+test('zero to three daily publications skip the digest once, without selection, generation or upload', async () => {
+  for (let count = 0; count < 4; count++) {
+    reset(); publishedCandidates = candidates.slice(0, count);
+    await runDailyDigestTick(at('18:50:00'));
+    assert.equal(row.status, 'SKIPPED');
+    assert.equal(row.candidates.length, count);
+    assert.equal(row.reviewMessageIds.length, 0);
+    assert.equal(requests.length, 1);
+    assert.match(requests[0].body.text, /Fewer than 4 stories/);
+    await runDailyDigestTick(at('18:55:00'));
+    await runDailyDigestTick(at('19:00:00'));
+    assert.equal(requests.length, 1);
+    assert.equal(copyCalls, 0);
+    assert.equal(uploads.length, 0);
+  }
+});
+
+test('exactly four daily publications allow both automatic and manual selection of two stories', async () => {
+  for (const manual of [false, true]) {
+    reset(); publishedCandidates = candidates.slice(0, 4);
+    await runDailyDigestTick(at('18:50:00'));
+    assert.equal(row.status, 'OPEN');
+    if (manual) {
+      await handleDigestCallback(callback(0), at('18:55:00'));
+      await handleDigestCallback(callback(1), at('18:55:00'));
+    }
+    await runDailyDigestTick(at('19:00:00'));
+    assert.equal(row.status, 'PUBLISHED');
+    assert.deepEqual(row.selectedIds, manual ? ['article0', 'article1'] : ['article3', 'article2']);
+    assert.equal(uploads.length, 1);
+  }
+});
+
+test('older open issues with fewer than four publications cannot publish even with two manual selections', async () => {
+  reset(); await runDailyDigestTick(at('18:50:00'));
+  row.candidates = row.candidates.slice(0, 3);
+  row.selectedIds = ['article0', 'article1'];
+  const before = requests.length;
+  await runDailyDigestTick(at('19:01:00'));
+  assert.equal(row.status, 'SKIPPED');
+  assert.equal(copyCalls, 0);
+  assert.equal(uploads.length, 0);
+  assert.equal(requests.length, before + 1);
+  await runDailyDigestTick(at('19:02:00'));
+  assert.equal(requests.length, before + 1);
 });
 
 test('cancellation button follows all articles and survives selection keyboard refresh', async () => {
@@ -162,7 +217,7 @@ test('19:00 sends one real PNG with selected titles and links, with duplicate ti
 
 test('selected digest publishes using the actual bundled template', async () => {
   const previous = process.env.DONTSKIP_TEMPLATE_PATH;
-  process.env.DONTSKIP_TEMPLATE_PATH = path.resolve(__dirname, '../assets/dontskip-template.png');
+    process.env.DONTSKIP_TEMPLATE_PATH = path.resolve(__dirname, '../assets/dontskip-background.png');
   try {
     reset();
     await runDailyDigestTick(at('18:50:00'));
@@ -252,13 +307,58 @@ test('ambiguous Telegram send is retained for reconciliation and never resent', 
 });
 
 test('image handles Unicode, escaped text, overflowing tokens, UTC date and missing logo', async () => {
-  assert.equal(wrapHeadline('word '.repeat(50)).length, 3);
-  assert.match(wrapHeadline('word '.repeat(50))[2], /…$/);
-  assert.ok(wrapHeadline('x'.repeat(100)).every(line => line.length <= 32));
+  await assert.rejects(layoutHeadline('x'.repeat(56)), /cannot fit/);
   const image = await generateDontSkipImage({ firstHeadline: 'Новость <one> & "two"',
     secondHeadline: 'Second story', date: at('19:00:00') });
   assert.equal((await sharp(image).metadata()).format, 'png');
   assert.throws(() => digestCaption([{ title: 'Bad', url: 'javascript:alert(1)' }, candidates[0]]), /Invalid/);
+});
+
+test('display headlines fit two measured lines without truncation', async () => {
+  for (const headline of [
+    'CHATGPT STORAGE SCALES FOR 1B USERS',
+    'GMAIL DATA MAY POWER AD TARGETING',
+    'НОВАЯ МОДЕЛЬ ДЛЯ АНАЛИЗА ДАННЫХ',
+  ]) {
+    const layout = await layoutHeadline(headline);
+    assert.equal(layout.lines.join(' '), headline);
+    assert.ok(layout.lines.length <= 2);
+    assert.ok(layout.rendered.every(line => line.info.width <= 980));
+    assert.ok(layout.fontSize >= 56 && layout.fontSize <= 62);
+    assert.ok(!layout.lines.some(line => /\b1$|\bGoogle$/.test(line)));
+  }
+  const secondary = await layoutHeadline('GMAIL DATA MAY POWER AD TARGETING', 'secondary');
+  assert.equal(secondary.fontSize, 51);
+  assert.deepEqual(secondary.lines, ['GMAIL DATA MAY', 'POWER AD TARGETING']);
+  assert.deepEqual((await layoutHeadline('CHATGPT STORAGE SCALES FOR 1B USERS')).lines,
+    ['CHATGPT STORAGE', 'SCALES FOR 1B USERS']);
+  await assert.rejects(layoutHeadline(' '), /cannot be empty/);
+  await assert.rejects(layoutHeadline('word '.repeat(250)), /too long/);
+});
+
+test('image headlines reuse approved post text, decode once and fall back for older articles', () => {
+  assert.equal(digestImageHeadline('Raw title', 'Google may use Gmail &amp; Photos data\n\nBody'),
+    'Google may use Gmail & Photos data');
+  assert.equal(digestImageHeadline('Raw title', 'A &amp;lt; B\n\nBody'), 'A &lt; B');
+  assert.equal(digestImageHeadline('Raw title', null), 'Raw title');
+  assert.equal(digestImageHeadline('Raw title', '<b>Unexpected markup</b>'), 'Raw title');
+});
+
+test('approved headline is snapshotted and survives publication without replacing original link titles', async () => {
+  reset();
+  candidates[0].telegramPost = 'Edited &amp; approved headline\n\nPost body';
+  try {
+    await runDailyDigestTick(at('18:50:00'));
+    assert.equal(articleQuery.select.telegramPost, true);
+    assert.equal(row.candidates[0].imageHeadline, 'Edited & approved headline');
+    await handleDigestCallback(callback(0), at('18:55:00'));
+    await handleDigestCallback(callback(1), at('18:55:00'));
+    await runDailyDigestTick(at('19:00:00'));
+    assert.equal(row.candidates[0].imageHeadline, 'Edited & approved headline');
+    assert.match(uploads[0].caption, /Story &lt;0&gt; &amp; details/);
+  } finally {
+    delete candidates[0].telegramPost;
+  }
 });
 
 test('PNG template is preserved under text overlays and non-square templates fail', async () => {
@@ -276,8 +376,8 @@ test('PNG template is preserved under text overlays and non-square templates fai
     assert.deepEqual(pixel(0, 0), [18, 52, 86]);
     assert.deepEqual(pixel(600, 550), [18, 52, 86], 'existing branding area must remain untouched');
     let textPixels = 0;
-    for (let y = 210; y < 265; y++) {
-      for (let x = 200; x < 1000; x++) {
+    for (let y = 140; y < 195; y++) {
+      for (let x = 110; x < 1000; x++) {
         if (pixel(x, y).every(value => value > 230)) textPixels++;
       }
     }
@@ -324,12 +424,14 @@ test('render failure retains selected stories and retries publication once after
     await sharp({ create: { width: 600, height: 500, channels: 3, background: 'black' } })
       .png().toFile(template);
     await assert.rejects(runDailyDigestTick(at('19:00:00')), /must be square/);
+    assert.equal(copyCalls, 1);
     assert.equal(row.status, 'OPEN');
     assert.deepEqual(row.selectedIds, ['article1', 'article2']);
     assert.equal(uploads.length, 0);
     await sharp({ create: { width: 1254, height: 1254, channels: 3, background: 'black' } })
       .png().toFile(template);
     await runDailyDigestTick(at('19:01:00'));
+    assert.equal(copyCalls, 1, 'saved display copy should survive a render retry');
     assert.equal(row.status, 'PUBLISHED');
     assert.deepEqual(row.selectedIds, ['article1', 'article2']);
     await runDailyDigestTick(at('19:02:00'));
@@ -337,4 +439,17 @@ test('render failure retains selected stories and retries publication once after
   } finally {
     process.env.DONTSKIP_TEMPLATE_PATH = previous;
   }
+});
+
+test('copy generation failure leaves publication open and sends nothing', async () => {
+  reset(); await runDailyDigestTick(at('18:50:00'));
+  failCopy = true;
+  await assert.rejects(runDailyDigestTick(at('19:00:00')), /copy unavailable/);
+  assert.equal(row.status, 'OPEN');
+  assert.equal(uploads.length, 0);
+  failCopy = false;
+  await runDailyDigestTick(at('19:00:10'));
+  assert.equal(row.status, 'PUBLISHED');
+  assert.equal(uploads.length, 1);
+  assert.ok(row.candidates.find(item => item.id === row.selectedIds[0]).display);
 });

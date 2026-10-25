@@ -1,10 +1,22 @@
 import { prisma } from '../db/prisma';
 import { escapeHtml } from './telegram-caption';
 import { generateDontSkipImage } from './dontskip-image';
+import { generateDigestDisplay, DigestDisplay } from './dontskip-copy.service';
 import { sendDigestPhoto, telegramRequest, TelegramCallbackQuery } from './telegram.service';
 
-export interface DigestCandidate { id: string; title: string; url: string; score?: number | null; }
+export interface DigestCandidate { id: string; title: string; url: string; score?: number | null; imageHeadline?: string; display?: DigestDisplay; }
 const PAGE_SIZE = 5;
+const MIN_DAILY_PUBLICATIONS = 4;
+const TOO_FEW_PUBLICATIONS = `Fewer than ${MIN_DAILY_PUBLICATIONS} stories were published today by 18:50 UTC. The #DONTSKIP digest has been skipped.`;
+
+// Reuse the headline already edited and approved for the channel. Saved captions
+// contain escaped plain text; decode once, without interpreting it as markup.
+export function digestImageHeadline(title: string, telegramPost?: string | null): string {
+  const firstLine = telegramPost?.trim().split(/\r?\n/u)[0]?.trim();
+  if (!firstLine || /[<>]/u.test(firstLine)) return title;
+  return firstLine.replace(/&(amp|lt|gt|quot);/gu, (_, entity: string) =>
+    ({ amp: '&', lt: '<', gt: '>', quot: '"' }[entity]!));
+}
 
 export function selectDigestCandidates(items: DigestCandidate[], selectedIds: string[]): DigestCandidate[] {
   const selected = [...new Set(selectedIds)].flatMap(id => {
@@ -119,18 +131,29 @@ export async function runDailyDigestTick(now = new Date()): Promise<void> {
       where: { status: 'PUBLISHED', telegramMessageId: { not: null },
         channelPublishedAt: { gte: schedule.start, lte: schedule.selection } },
       orderBy: [{ channelPublishedAt: 'asc' }, { id: 'asc' }],
-      select: { id: true, title: true, url: true, telegramMessageId: true, score: true },
+      select: { id: true, title: true, url: true, telegramMessageId: true, score: true, telegramPost: true },
     });
     const candidates = articles.map(article => ({ id: article.id, title: article.title, score: article.score,
-      url: postLink(article.telegramMessageId!, article.url) }));
+      url: postLink(article.telegramMessageId!, article.url),
+      imageHeadline: digestImageHeadline(article.title, article.telegramPost) }));
     digest = await prisma.dailyDigest.upsert({ where: { date: schedule.date }, update: {},
-      create: { date: schedule.date, candidates, status: candidates.length >= 2 ? 'OPEN' : 'SKIPPED' } });
+      create: { date: schedule.date, candidates, status: candidates.length >= MIN_DAILY_PUBLICATIONS ? 'OPEN' : 'SKIPPED' } });
     if (digest.status === 'SKIPPED') {
-      await notify('Fewer than two stories were published today by 18:50 UTC. The #DONTSKIP digest has been skipped.');
+      await notify(TOO_FEW_PUBLICATIONS);
     }
   }
   if (!digest || digest.status !== 'OPEN') return;
   let items = digest.candidates as unknown as DigestCandidate[];
+  // Apply the minimum to issues opened before this rule was introduced too,
+  // including manually selected issues resumed after the publication deadline.
+  if (items.length < MIN_DAILY_PUBLICATIONS) {
+    const result = await prisma.dailyDigest.updateMany({
+      where: { date: schedule.date, status: 'OPEN', version: digest.version },
+      data: { status: 'SKIPPED', version: { increment: 1 } },
+    });
+    if (result.count) await notify(TOO_FEW_PUBLICATIONS);
+    return;
+  }
   if (now < schedule.publish) {
     for (let page = digest.reviewMessageIds.length; page < Math.ceil(items.length / PAGE_SIZE); page++) {
       if (now.getTime() + Date.now() - startedAt >= schedule.publish.getTime()) break;
@@ -162,12 +185,28 @@ export async function runDailyDigestTick(now = new Date()): Promise<void> {
     return;
   }
   // Render before claiming delivery, so a rendering failure/crash can be retried safely.
+  if (selected.some(item => !item.display)) {
+    // Generate the pair together so the editor sees their order and type sizes.
+    const copy = await generateDigestDisplay(selected);
+    selected.forEach((item, index) => { item.display = {
+      kicker: copy[index]!.kicker, displayHeadline: copy[index]!.displayHeadline,
+    }; });
+    const saved = await prisma.dailyDigest.updateMany({
+      where: { date: schedule.date, status: 'OPEN', version: digest.version },
+      data: { candidates: JSON.parse(JSON.stringify(items)), version: { increment: 1 } },
+    });
+    if (!saved.count) return;
+    digest.version++;
+  }
   const caption = digestCaption(selected);
-  const photo = await generateDontSkipImage({ firstHeadline: selected[0].title,
-    secondHeadline: selected[1].title, date: schedule.start });
+  const photo = await generateDontSkipImage({ firstHeadline: selected[0].display!.displayHeadline,
+    firstKicker: selected[0].display!.kicker, secondHeadline: selected[1].display!.displayHeadline,
+    secondKicker: selected[1].display!.kicker, date: schedule.start });
   const claimed = await prisma.dailyDigest.updateMany({ where: { date: schedule.date, status: 'OPEN', version: digest.version },
     data: { status: 'PUBLISHING', selectedIds: selected.map(item => item.id), candidates: items.map(item => ({
       id: item.id, title: item.title, url: item.url, score: item.score ?? null,
+      ...(item.imageHeadline ? { imageHeadline: item.imageHeadline } : {}),
+      ...(item.display ? { display: { ...item.display } } : {}),
     })) } });
   if (!claimed.count) return;
   // Never retry an ambiguous send automatically: Telegram has no idempotency key.
