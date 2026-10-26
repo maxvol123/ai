@@ -1,10 +1,11 @@
 import sharp, { OverlayOptions } from 'sharp';
 import path from 'node:path';
-import { access } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { escapeHtml } from './telegram-caption';
 
 export const LAYOUT = {
   canvas: { width: 1200, height: 1200 }, left: 110, right: 1090,
+  headlineRight: 900,
   story1: { kickerY: 125, line1Y: 190, line2Y: 255 },
   dontSkip: { y: 430 },
   story2: { kickerY: 600, line1Y: 665, line2Y: 730 },
@@ -41,7 +42,8 @@ export async function layoutHeadline(headline: string, variant: Variant = 'prima
   if (text.length > 56) throw new Error('Digest display headline is too long (maximum 56 characters)');
   const words = text.split(' ');
   const type = variant === 'primary' ? TYPE.headlinePrimary : TYPE.headlineSecondary;
-  const width = LAYOUT.right - LAYOUT.left;
+  // The number column is reserved even for headlines longer than the demo copy.
+  const width = LAYOUT.headlineRight - LAYOUT.left;
   for (let fontSize = type.size; fontSize >= type.size - 6; fontSize -= 2) {
     const cache = new Map<string, Awaited<ReturnType<typeof measure>>>();
     const render = async (line: string) => {
@@ -81,10 +83,27 @@ export async function generateDontSkipImage(params: {
   const templatePath = path.resolve(process.env.DONTSKIP_TEMPLATE_PATH ?? 'assets/dontskip-background.png');
   let background: Buffer;
   try {
-    await access(templatePath);
-    const metadata = await sharp(templatePath).metadata();
+    const legacyPath = path.resolve('assets/dontskip-template.png');
+    const cleanPath = path.resolve('assets/dontskip-background.png');
+    let input: Buffer;
+    if (templatePath === legacyPath) {
+      // Old deployments can retain DONTSKIP_TEMPLATE_PATH pointing to branded
+      // artwork. Migrate that setting in memory instead of drawing it twice.
+      console.warn('[digest] Legacy DONTSKIP template configured; using clean editorial background');
+      input = await readFile(cleanPath);
+    } else {
+      input = await readFile(templatePath);
+    }
+    // Also recognize a renamed copy of the bundled legacy artwork.
+    const legacy = await readFile(legacyPath).catch(() => undefined);
+    if (legacy && input.equals(legacy)) {
+      console.warn('[digest] Branded legacy background detected; using clean editorial background');
+      input = await readFile(cleanPath);
+      if (input.equals(legacy)) throw new Error('Clean DONTSKIP background contains legacy branding');
+    }
+    const metadata = await sharp(input).metadata();
     if (!metadata.width || metadata.width !== metadata.height) throw new Error('DONTSKIP template must be square');
-    background = await sharp(templatePath).resize(1200, 1200).png().toBuffer();
+    background = await sharp(input).resize(1200, 1200).png().toBuffer();
   } catch (error) {
     if (process.env.DONTSKIP_TEMPLATE_PATH) {
       if (error instanceof Error && error.message.includes('must be square')) throw error;

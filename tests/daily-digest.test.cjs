@@ -53,7 +53,7 @@ mock('../src/services/telegram.service', {
   },
 });
 const { runDailyDigestTick, handleDigestCallback, digestSchedule, digestCaption, selectDigestCandidates, digestImageHeadline } = require('../src/services/daily-digest.service');
-const { generateDontSkipImage, layoutHeadline } = require('../src/services/dontskip-image');
+const { generateDontSkipImage, layoutHeadline, LAYOUT } = require('../src/services/dontskip-image');
 let fixtureDirectory;
 const originalTemplate = process.env.DONTSKIP_TEMPLATE_PATH;
 before(async () => {
@@ -323,7 +323,7 @@ test('display headlines fit two measured lines without truncation', async () => 
     const layout = await layoutHeadline(headline);
     assert.equal(layout.lines.join(' '), headline);
     assert.ok(layout.lines.length <= 2);
-    assert.ok(layout.rendered.every(line => line.info.width <= 980));
+    assert.ok(layout.rendered.every(line => line.info.width <= LAYOUT.headlineRight - LAYOUT.left));
     assert.ok(layout.fontSize >= 56 && layout.fontSize <= 62);
     assert.ok(!layout.lines.some(line => /\b1$|\bGoogle$/.test(line)));
   }
@@ -342,6 +342,56 @@ test('image headlines reuse approved post text, decode once and fall back for ol
   assert.equal(digestImageHeadline('Raw title', 'A &amp;lt; B\n\nBody'), 'A &lt; B');
   assert.equal(digestImageHeadline('Raw title', null), 'Raw title');
   assert.equal(digestImageHeadline('Raw title', '<b>Unexpected markup</b>'), 'Raw title');
+});
+
+test('overlapping screenshot copy is rejected and concise replacements fit outside the number column', async () => {
+  await assert.rejects(layoutHeadline('ANTHROPIC S-1 OUTLINES CLAUDE IPO RISKS'), /cannot fit/);
+  await assert.rejects(layoutHeadline('SPACEX SAYS APOLLO COMMITTED ABOUT $40B FOR GPUS', 'secondary'), /cannot fit/);
+  const headlines = [
+    'S-1 OUTLINES CLAUDE IPO RISKS',
+    'SPACEX: APOLLO COMMITS ~$40B FOR GPUS',
+  ];
+  for (const [index, headline] of headlines.entries()) {
+    const layout = await layoutHeadline(headline, index ? 'secondary' : 'primary');
+    assert.equal(layout.lines.join(' '), headline);
+    assert.ok(layout.lines.length <= 2);
+    assert.ok(layout.rendered.every(line => LAYOUT.left + line.info.width <= LAYOUT.headlineRight));
+  }
+});
+
+test('legacy background configuration and renamed copies render identically to the clean background', async () => {
+  const previous = process.env.DONTSKIP_TEMPLATE_PATH;
+  const clean = path.resolve(__dirname, '../assets/dontskip-background.png');
+  const legacy = path.resolve(__dirname, '../assets/dontskip-template.png');
+  const renamed = path.join(fixtureDirectory, 'old-production-background.png');
+  const params = { firstHeadline: 'S-1 OUTLINES CLAUDE IPO RISKS',
+    secondHeadline: 'SPACEX: APOLLO COMMITS ~$40B FOR GPUS',
+    firstKicker: 'ANTHROPIC', secondKicker: 'SPACEX', date: at('19:00:00') };
+  try {
+    process.env.DONTSKIP_TEMPLATE_PATH = clean;
+    const expected = await sharp(await generateDontSkipImage(params)).raw().toBuffer();
+    await fs.copyFile(legacy, renamed);
+    for (const configured of [legacy, renamed]) {
+      process.env.DONTSKIP_TEMPLATE_PATH = configured;
+      const actual = await sharp(await generateDontSkipImage(params)).raw().toBuffer();
+      assert.deepEqual(actual, expected, 'legacy artwork must never duplicate the wordmark or logo');
+    }
+  } finally {
+    if (previous === undefined) delete process.env.DONTSKIP_TEMPLATE_PATH;
+    else process.env.DONTSKIP_TEMPLATE_PATH = previous;
+  }
+});
+
+test('saved display copy from the old wide layout is regenerated before publication', async () => {
+  reset(); await runDailyDigestTick(at('18:50:00'));
+  row.selectedIds = ['article0', 'article1'];
+  row.candidates[0].display = { kicker: 'ANTHROPIC', displayHeadline: 'ANTHROPIC S-1 OUTLINES CLAUDE IPO RISKS' };
+  row.candidates[1].display = { kicker: 'SPACEX', displayHeadline: 'SPACEX SAYS APOLLO COMMITTED ABOUT $40B FOR GPUS' };
+  await runDailyDigestTick(at('19:00:00'));
+  assert.equal(copyCalls, 1);
+  assert.equal(row.status, 'PUBLISHED');
+  assert.equal(row.candidates[0].display.displayHeadline, 'EDITED STORY ARTICLE0');
+  assert.equal(uploads.length, 1);
 });
 
 test('approved headline is snapshotted and survives publication without replacing original link titles', async () => {

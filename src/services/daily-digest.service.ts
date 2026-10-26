@@ -1,6 +1,6 @@
 import { prisma } from '../db/prisma';
 import { escapeHtml } from './telegram-caption';
-import { generateDontSkipImage } from './dontskip-image';
+import { generateDontSkipImage, layoutHeadline } from './dontskip-image';
 import { generateDigestDisplay, DigestDisplay } from './dontskip-copy.service';
 import { sendDigestPhoto, telegramRequest, TelegramCallbackQuery } from './telegram.service';
 
@@ -185,7 +185,14 @@ export async function runDailyDigestTick(now = new Date()): Promise<void> {
     return;
   }
   // Render before claiming delivery, so a rendering failure/crash can be retried safely.
-  if (selected.some(item => !item.display)) {
+  const reusableDisplay = await Promise.all(selected.map(async (item, index) => {
+    if (!item.display) return false;
+    try {
+      await layoutHeadline(item.display.displayHeadline, index ? 'secondary' : 'primary');
+      return true;
+    } catch { return false; }
+  }));
+  if (reusableDisplay.some(valid => !valid)) {
     // Generate the pair together so the editor sees their order and type sizes.
     const copy = await generateDigestDisplay(selected);
     selected.forEach((item, index) => { item.display = {
