@@ -27,7 +27,22 @@ export const TYPE = {
 } as const;
 
 const FONT = 'DejaVu Sans, Arial, sans-serif';
+// Works from both src/services and dist/services, regardless of systemd's cwd.
+const ASSETS = path.resolve(__dirname, '../../assets');
 type Variant = 'primary' | 'secondary';
+
+async function legacyBranding(input: Buffer, legacy: Buffer): Promise<boolean> {
+  if (input.equals(legacy)) return true;
+  // Compare the wordmark pixels, not file bytes: server copies may have been
+  // resized, recompressed or converted to JPEG. A blank background must not match.
+  const fingerprint = (buffer: Buffer) => sharp(buffer).resize(240, 240, { fit: 'fill' })
+    .flatten({ background: 'black' }).removeAlpha().toColourspace('srgb')
+    .extract({ left: 24, top: 84, width: 192, height: 28 }).raw().toBuffer();
+  const [actual, expected] = await Promise.all([fingerprint(input), fingerprint(legacy)]);
+  let difference = 0;
+  for (let i = 0; i < expected.length; i++) difference += Math.abs(actual[i] - expected[i]);
+  return difference / expected.length < 8;
+}
 
 async function measure(text: string, size: number, weight: number) {
   const svg = `<svg width="2400" height="128" xmlns="http://www.w3.org/2000/svg">
@@ -80,11 +95,12 @@ async function storySvg(headline: string, kicker: string, variant: Variant) {
 export async function generateDontSkipImage(params: {
   firstHeadline: string; secondHeadline: string; firstKicker?: string; secondKicker?: string; date: Date;
 }): Promise<Buffer> {
-  const templatePath = path.resolve(process.env.DONTSKIP_TEMPLATE_PATH ?? 'assets/dontskip-background.png');
+  const templatePath = process.env.DONTSKIP_TEMPLATE_PATH
+    ? path.resolve(process.env.DONTSKIP_TEMPLATE_PATH) : path.join(ASSETS, 'dontskip-background.png');
   let background: Buffer;
   try {
-    const legacyPath = path.resolve('assets/dontskip-template.png');
-    const cleanPath = path.resolve('assets/dontskip-background.png');
+    const legacyPath = path.join(ASSETS, 'dontskip-template.png');
+    const cleanPath = path.join(ASSETS, 'dontskip-background.png');
     let input: Buffer;
     if (templatePath === legacyPath) {
       // Old deployments can retain DONTSKIP_TEMPLATE_PATH pointing to branded
@@ -94,15 +110,15 @@ export async function generateDontSkipImage(params: {
     } else {
       input = await readFile(templatePath);
     }
-    // Also recognize a renamed copy of the bundled legacy artwork.
-    const legacy = await readFile(legacyPath).catch(() => undefined);
-    if (legacy && input.equals(legacy)) {
-      console.warn('[digest] Branded legacy background detected; using clean editorial background');
-      input = await readFile(cleanPath);
-      if (input.equals(legacy)) throw new Error('Clean DONTSKIP background contains legacy branding');
-    }
     const metadata = await sharp(input).metadata();
     if (!metadata.width || metadata.width !== metadata.height) throw new Error('DONTSKIP template must be square');
+    // Also recognize renamed, re-encoded and resized legacy artwork.
+    const legacy = await readFile(legacyPath).catch(() => undefined);
+    if (legacy && await legacyBranding(input, legacy)) {
+      console.warn('[digest] Branded legacy background detected; using clean editorial background');
+      input = await readFile(cleanPath);
+      if (await legacyBranding(input, legacy)) throw new Error('Clean DONTSKIP background contains legacy branding');
+    }
     background = await sharp(input).resize(1200, 1200).png().toBuffer();
   } catch (error) {
     if (process.env.DONTSKIP_TEMPLATE_PATH) {
@@ -116,7 +132,8 @@ export async function generateDontSkipImage(params: {
   }).format(params.date);
   const first = await storySvg(params.firstHeadline, params.firstKicker ?? 'TOP STORY', 'primary');
   const second = await storySvg(params.secondHeadline, params.secondKicker ?? 'ALSO TODAY', 'secondary');
-  const logoPath = path.resolve(process.env.DONTSKIP_LOGO_PATH ?? 'assets/tikrd-logo.png');
+  const logoPath = process.env.DONTSKIP_LOGO_PATH
+    ? path.resolve(process.env.DONTSKIP_LOGO_PATH) : path.join(ASSETS, 'tikrd-logo.png');
   let logo: Buffer | undefined;
   try { logo = await sharp(logoPath).resize(240, 125, { fit: 'inside' }).png().toBuffer(); } catch (error) {
     if (process.env.DONTSKIP_LOGO_PATH) throw new Error(`Cannot read DONTSKIP_LOGO_PATH: ${logoPath}`, { cause: error });

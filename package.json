@@ -9,6 +9,7 @@
     "build": "tsc",
     "test": "node --test tests/*.test.cjs",
     "digest:preview": "ts-node src/jobs/preview-dontskip.job.ts",
+    "digest:test": "ts-node src/jobs/test-dontskip-once.job.ts",
     "collect": "ts-node src/app.ts",
     "collect:once": "ts-node src/jobs/collect-once.ts",
     "analyze:latest": "ts-node src/jobs/analyze-latest.job.ts",

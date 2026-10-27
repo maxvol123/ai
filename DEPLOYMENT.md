@@ -1,6 +1,32 @@
 # Daily #DONTSKIP digest
 
-Editorial background compatibility: a legacy `DONTSKIP_TEMPLATE_PATH=assets/dontskip-template.png` or a byte-identical renamed copy is automatically replaced with `assets/dontskip-background.png` and logged. Keep the clean background in the deployed assets. Headlines are limited to x=110–900 (790px); the right number column is reserved. Saved display copy is revalidated against these bounds and regenerated when it no longer fits. Deploy the updated renderer and restart the polling process for this fix to take effect; already sent Telegram posts are not edited automatically.
+## One-time server test
+
+Run from the repository directory after copying/pulling the updated code:
+
+```sh
+npm run digest:test
+```
+
+This loads `.env`, renders once, saves `exports/dontskip-test-<UTC-date>-<timestamp>.png`, sends a TEST photo to the owner's `CHAT_ID`, and exits. It uses the day's saved candidates, selections and valid display copy even if the scheduled issue is already PUBLISHED or CANCELLED. If no candidate snapshot exists, it selects two highest-scored published articles from that UTC day and generates display copy via OpenAI. It requires two eligible stories rather than the scheduler's minimum of four. It never writes to the database, changes the daily issue, or sends to `TELEGRAM_CHANNEL_ID`.
+
+```sh
+# Reproduce the screenshot text with the server's configured background and logo;
+# no database queries or OpenAI requests, sends the result to CHAT_ID:
+npm run digest:test -- --sample
+
+# Test a specific day's saved stories:
+npm run digest:test -- --date 2026-10-27
+
+# Save a PNG only, without sending to Telegram:
+npm run digest:test -- --sample --local-only --output exports/dontskip-test.png
+```
+
+Sending requires `HTTPAPI_TG` and `CHAT_ID`; real articles also require database access and `OPENAI_API` when saved display copy is unavailable. Run with the same environment variables and working directory as the polling service to reproduce its image configuration. The command logs the configured background path, chosen stories and generated copy. It does not retry Telegram sends automatically; the PNG remains on disk if sending fails. No polling process restart or wait for 19:00 UTC is needed for this command.
+
+## Scheduled digest
+
+Editorial background compatibility: a legacy `DONTSKIP_TEMPLATE_PATH=assets/dontskip-template.png`, a renamed copy, or a resized/re-encoded copy with matching wordmark pixels is automatically replaced with `assets/dontskip-background.png` and logged. Bundled assets resolve relative to the application, independently of the polling process working directory; custom environment paths remain relative to that working directory. Keep the clean background in the deployed assets. Headlines are limited to x=110–900 (790px); the right number column is reserved. Saved display copy is revalidated against these bounds and regenerated when it no longer fits. Deploy the updated renderer and restart the polling process for this fix to take effect; already sent Telegram posts are not edited automatically.
 
 The digest requires at least **four channel publications** in the current UTC day's 00:00–18:50 window. With zero to three publications, it is automatically marked `SKIPPED`, the owner is notified, and no selection pages, display-copy generation or channel upload are performed. Exactly four publications allow the usual selection of two stories. This minimum also applies to previously saved OPEN issues after a restart, even when two stories were already selected manually.
 

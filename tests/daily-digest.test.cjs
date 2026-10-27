@@ -359,11 +359,13 @@ test('overlapping screenshot copy is rejected and concise replacements fit outsi
   }
 });
 
-test('legacy background configuration and renamed copies render identically to the clean background', async () => {
+test('legacy backgrounds including resized and re-encoded copies render identically to the clean background', async () => {
   const previous = process.env.DONTSKIP_TEMPLATE_PATH;
   const clean = path.resolve(__dirname, '../assets/dontskip-background.png');
   const legacy = path.resolve(__dirname, '../assets/dontskip-template.png');
   const renamed = path.join(fixtureDirectory, 'old-production-background.png');
+  const resized = path.join(fixtureDirectory, 'resized-production-background.png');
+  const jpeg = path.join(fixtureDirectory, 'recompressed-production-background.jpg');
   const params = { firstHeadline: 'S-1 OUTLINES CLAUDE IPO RISKS',
     secondHeadline: 'SPACEX: APOLLO COMMITS ~$40B FOR GPUS',
     firstKicker: 'ANTHROPIC', secondKicker: 'SPACEX', date: at('19:00:00') };
@@ -371,12 +373,30 @@ test('legacy background configuration and renamed copies render identically to t
     process.env.DONTSKIP_TEMPLATE_PATH = clean;
     const expected = await sharp(await generateDontSkipImage(params)).raw().toBuffer();
     await fs.copyFile(legacy, renamed);
-    for (const configured of [legacy, renamed]) {
+    await sharp(legacy).resize(600, 600).png().toFile(resized);
+    await sharp(legacy).resize(850, 850).jpeg({ quality: 75 }).toFile(jpeg);
+    for (const configured of [legacy, renamed, resized, jpeg]) {
       process.env.DONTSKIP_TEMPLATE_PATH = configured;
       const actual = await sharp(await generateDontSkipImage(params)).raw().toBuffer();
       assert.deepEqual(actual, expected, 'legacy artwork must never duplicate the wordmark or logo');
     }
   } finally {
+    if (previous === undefined) delete process.env.DONTSKIP_TEMPLATE_PATH;
+    else process.env.DONTSKIP_TEMPLATE_PATH = previous;
+  }
+});
+
+test('bundled assets resolve independently of the polling process working directory', async () => {
+  const previous = process.env.DONTSKIP_TEMPLATE_PATH;
+  const cwd = process.cwd();
+  const params = { firstHeadline: 'FIRST STORY', secondHeadline: 'SECOND STORY', date: at('19:00:00') };
+  try {
+    delete process.env.DONTSKIP_TEMPLATE_PATH;
+    const expected = await generateDontSkipImage(params);
+    process.chdir(fixtureDirectory);
+    assert.deepEqual(await generateDontSkipImage(params), expected);
+  } finally {
+    process.chdir(cwd);
     if (previous === undefined) delete process.env.DONTSKIP_TEMPLATE_PATH;
     else process.env.DONTSKIP_TEMPLATE_PATH = previous;
   }

@@ -72,10 +72,11 @@ function telegramFetch({ photoFails = false, textFails = false } = {}) {
 test('digest uploads PNG bytes with its HTML caption as one multipart photo', async () => {
   const photo = Buffer.from('PNG fixture');
   const caption = '#DONTSKIP\n\n<a href="https://example.com/one">First</a>\n\nSecond';
+  let destination = 'channel';
   global.fetch = async (url, init) => {
     assert.ok(url.endsWith('/sendPhoto'));
     assert.ok(init.body instanceof FormData);
-    assert.equal(init.body.get('chat_id'), 'channel');
+    assert.equal(init.body.get('chat_id'), destination);
     assert.equal(init.body.get('caption'), caption);
     assert.equal(init.body.get('parse_mode'), 'HTML');
     assert.equal(init.body.get('photo').type, 'image/png');
@@ -83,6 +84,8 @@ test('digest uploads PNG bytes with its HTML caption as one multipart photo', as
     return { ok: true, json: async () => ({ ok: true, result: { message_id: 999 } }) };
   };
   assert.equal(await sendDigestPhoto(photo, caption), 999);
+  destination = 'review';
+  assert.equal(await sendDigestPhoto(photo, caption, 'review'), 999);
   global.fetch = async () => ({ ok: false, json: async () => ({ ok: false, description: 'rejected' }) });
   await assert.rejects(sendDigestPhoto(photo, caption), /digest upload failed/);
 });

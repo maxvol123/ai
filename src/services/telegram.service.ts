@@ -85,11 +85,12 @@ export async function telegramRequest<T>(
   return data.result;
 }
 
-export async function sendDigestPhoto(photo: Buffer, caption: string): Promise<number> {
+export async function sendDigestPhoto(photo: Buffer, caption: string, chatId?: string): Promise<number> {
   const { token, channelId } = getTelegramConfig();
-  if (!channelId) throw new Error('TELEGRAM_CHANNEL_ID must be set');
+  const destination = chatId ?? channelId;
+  if (!destination) throw new Error('TELEGRAM_CHANNEL_ID must be set');
   const form = new FormData();
-  form.set('chat_id', channelId);
+  form.set('chat_id', destination);
   form.set('photo', new Blob([new Uint8Array(photo)], { type: 'image/png' }), 'dontskip.png');
   form.set('caption', caption);
   form.set('parse_mode', 'HTML');
